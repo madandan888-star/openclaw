@@ -161,7 +161,7 @@ export function stopSubagentMonitor(runId: string): void {
 }
 
 export function cleanupAllSubagentMonitors(): void {
-  for (const runId of [...sessions.keys()]) {
+  for (const runId of sessions.keys()) {
     stopSubagentMonitor(runId);
   }
 }
