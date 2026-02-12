@@ -24,6 +24,11 @@ function formatConfigIssues(issues: Array<{ path: string; message: string }>): s
   return issues.map((issue) => `- ${issue.path || "<root>"}: ${issue.message}`);
 }
 
+/** Returns true when every issue is just an "Unrecognized key" complaint. */
+function allIssuesAreUnrecognizedKeys(issues: Array<{ path: string; message: string }>): boolean {
+  return issues.length > 0 && issues.every((i) => /^Unrecognized key/i.test(i.message));
+}
+
 export async function ensureConfigReady(params: {
   runtime: RuntimeEnv;
   commandPath?: string[];
@@ -77,6 +82,14 @@ export async function ensureConfigReady(params: {
     `${muted("Run:")} ${commandText(formatCliCommand("openclaw doctor --fix"))}`,
   );
   if (!allowInvalid) {
+    // Unrecognized keys are non-fatal: warn and continue so the gateway stays up.
+    // Only truly structural errors (bad types, parse failures) should block startup.
+    if (allIssuesAreUnrecognizedKeys(snapshot.issues)) {
+      params.runtime.error(
+        muted("Continuing with best-effort config (unknown keys will be ignored)."),
+      );
+      return;
+    }
     params.runtime.exit(1);
   }
 }

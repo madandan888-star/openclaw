@@ -210,6 +210,17 @@ export type AgentDefaultsConfig = {
     model?: string | { primary?: string; fallbacks?: string[] };
     /** Default thinking level for spawned sub-agents (e.g. "off", "low", "medium", "high"). */
     thinking?: string;
+    /** Automatic progress monitoring for spawned sub-agents. */
+    monitor?: {
+      /** Enable automatic progress messages (default: false). */
+      enabled?: boolean;
+      /** Seconds to wait before sending the first progress message (default: 5). */
+      delaySeconds?: number;
+      /** Seconds between progress messages (default: 10). */
+      intervalSeconds?: number;
+    };
+    /** Glob patterns for allowed agent identifiers that can be spawned as sub-agents. */
+    allowAgents?: string[];
   };
   /** Optional sandbox settings for non-main sessions. */
   sandbox?: {

@@ -535,6 +535,16 @@ importers:
         specifier: workspace:*
         version: link:../..
 
+  extensions/wecom:
+    dependencies:
+      '@sinclair/typebox':
+        specifier: 0.34.48
+        version: 0.34.48
+    devDependencies:
+      openclaw:
+        specifier: workspace:*
+        version: link:../..
+
   extensions/whatsapp:
     devDependencies:
       openclaw:

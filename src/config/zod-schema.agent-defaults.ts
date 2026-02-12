@@ -153,6 +153,15 @@ export const AgentDefaultsSchema = z
           ])
           .optional(),
         thinking: z.string().optional(),
+        monitor: z
+          .object({
+            enabled: z.boolean().optional(),
+            delaySeconds: z.number().positive().optional(),
+            intervalSeconds: z.number().positive().optional(),
+          })
+          .strict()
+          .optional(),
+        allowAgents: z.array(z.string()).optional(),
       })
       .strict()
       .optional(),

@@ -1,0 +1,32 @@
+{
+  "name": "@openclaw/wecom",
+  "version": "2026.2.10",
+  "description": "OpenClaw WeCom (企业微信) channel plugin",
+  "type": "module",
+  "dependencies": {
+    "@sinclair/typebox": "0.34.48"
+  },
+  "devDependencies": {
+    "openclaw": "workspace:*"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "channel": {
+      "id": "wecom",
+      "label": "WeCom",
+      "selectionLabel": "WeCom (企业微信)",
+      "docsPath": "/channels/wecom",
+      "docsLabel": "wecom",
+      "blurb": "企业微信自建应用消息通道",
+      "aliases": [
+        "wework",
+        "wxwork"
+      ],
+      "order": 36,
+      "quickstartAllowFrom": true
+    },
+    "skills": []
+  }
+}

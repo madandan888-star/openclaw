@@ -4,6 +4,11 @@ import { onAgentEvent } from "../infra/agent-events.js";
 import { type DeliveryContext, normalizeDeliveryContext } from "../utils/delivery-context.js";
 import { runSubagentAnnounceFlow, type SubagentRunOutcome } from "./subagent-announce.js";
 import {
+  cleanupAllSubagentMonitors,
+  startSubagentMonitor,
+  stopSubagentMonitor,
+} from "./subagent-monitor.js";
+import {
   loadSubagentRegistryFromDisk,
   saveSubagentRegistryToDisk,
 } from "./subagent-registry.store.js";
@@ -246,6 +251,7 @@ function ensureListener() {
 }
 
 function finalizeSubagentCleanup(runId: string, cleanup: "delete" | "keep", didAnnounce: boolean) {
+  stopSubagentMonitor(runId);
   const entry = subagentRuns.get(runId);
   if (!entry) {
     return;
@@ -314,6 +320,12 @@ export function registerSubagentRun(params: {
   });
   ensureListener();
   persistSubagentRuns();
+  startSubagentMonitor({
+    runId: params.runId,
+    label: params.label,
+    task: params.task,
+    origin: requesterOrigin,
+  });
   if (archiveAfterMs) {
     startSweeper();
   }
@@ -396,6 +408,7 @@ async function waitForSubagentCompletion(runId: string, waitTimeoutMs: number) {
 }
 
 export function resetSubagentRegistryForTests() {
+  cleanupAllSubagentMonitors();
   subagentRuns.clear();
   resumedRuns.clear();
   stopSweeper();
@@ -414,6 +427,7 @@ export function addSubagentRunForTests(entry: SubagentRunRecord) {
 }
 
 export function releaseSubagentRun(runId: string) {
+  stopSubagentMonitor(runId);
   const didDelete = subagentRuns.delete(runId);
   if (didDelete) {
     persistSubagentRuns();

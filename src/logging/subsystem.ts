@@ -54,6 +54,12 @@ function getColorForConsole(): ChalkInstance {
   return hasTty || isRichConsoleEnv() ? new Chalk({ level: 1 }) : new Chalk({ level: 0 });
 }
 
+function formatLocalTimestamp(): string {
+  const d = new Date();
+  const pad = (n: number, len = 2) => String(n).padStart(len, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
+}
+
 const SUBSYSTEM_COLORS = ["cyan", "green", "yellow", "blue", "magenta", "red"] as const;
 const SUBSYSTEM_COLOR_OVERRIDES: Record<string, (typeof SUBSYSTEM_COLORS)[number]> = {
   "gmail-watcher": "blue",
@@ -175,10 +181,10 @@ function formatConsoleLine(opts: {
   const displayMessage = stripRedundantSubsystemPrefixForConsole(opts.message, displaySubsystem);
   const time = (() => {
     if (opts.style === "pretty") {
-      return color.gray(new Date().toISOString().slice(11, 19));
+      return color.gray(formatLocalTimestamp().slice(11, 19));
     }
     if (loggingState.consoleTimestampPrefix) {
-      return color.gray(new Date().toISOString());
+      return color.gray(formatLocalTimestamp());
     }
     return "";
   })();
