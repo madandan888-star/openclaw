@@ -54,7 +54,7 @@ async function sendProgress(session: MonitorSession): Promise<void> {
       cfg,
       to,
       text,
-      accountId: origin.accountId ?? null,
+      accountId: "subagent",
       threadId: origin.threadId ?? null,
     });
   } catch (err) {
