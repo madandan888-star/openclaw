@@ -171,6 +171,7 @@ export async function handleWeComMessage(params: HandleWeComMessageParams) {
   const route = core.channel.routing.resolveAgentRoute({
     cfg,
     channel: "wecom",
+    accountId: account.accountId,
     peer: {
       kind: chatType,
       id: peerId,
