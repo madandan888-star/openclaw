@@ -202,7 +202,7 @@ export const wecomPlugin: ChannelPlugin<ResolvedWeComAccount> = {
       const account = resolveWeComAccount({ cfg: ctx.cfg, accountId: ctx.accountId });
       const port = account.config?.webhookPort ?? 9001;
       ctx.setStatus({ accountId: ctx.accountId, port });
-      ctx.log?.info(`starting wecom[${ctx.accountId}] (webhook on port ${port})`);
+      ctx.log?.info(`starting wecom[${ctx.accountId}] (registering on port ${port})`);
       return monitorWeComProvider({
         config: ctx.cfg,
         runtime: ctx.runtime,

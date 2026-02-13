@@ -12,22 +12,36 @@ export type MonitorWeComOpts = {
   accountId?: string;
 };
 
-const httpServers = new Map<string, http.Server>();
-
-function startWebhookServer(params: {
-  cfg: ClawdbotConfig;
+type AccountHandler = {
+  accountId: string;
+  crypto: WeComCrypto;
   account: ResolvedWeComAccount;
+  chatHistories: Map<string, HistoryEntry[]>;
+};
+
+// key = "port:path" — accounts sharing the same port+path share one HTTP server
+const sharedServers = new Map<
+  string,
+  {
+    server: http.Server;
+    handlers: Map<string, AccountHandler>; // accountId → handler
+    cfg: ClawdbotConfig;
+    runtime?: RuntimeEnv;
+  }
+>();
+
+function createSharedServer(params: {
+  key: string;
+  port: number;
+  path: string;
+  cfg: ClawdbotConfig;
   runtime?: RuntimeEnv;
-  abortSignal?: AbortSignal;
 }) {
-  const { cfg, account, runtime, abortSignal } = params;
+  const { key, port, path, cfg, runtime } = params;
   const log = runtime?.log ?? console.log;
   const error = runtime?.error ?? console.error;
 
-  const port = account.config?.webhookPort ?? 9001;
-  const path = account.config?.webhookPath ?? "/wecom/callback";
-  const crypto = new WeComCrypto(account.token, account.encodingAesKey, account.corpId);
-  const chatHistories = new Map<string, HistoryEntry[]>();
+  const handlers = new Map<string, AccountHandler>();
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", `http://localhost:${port}`);
@@ -52,16 +66,21 @@ function startWebhookServer(params: {
     // GET = URL verification
     if (req.method === "GET") {
       const echostr = url.searchParams.get("echostr") ?? "";
-      try {
-        const echo = crypto.verifyUrl(msgSignature, timestamp, nonce, echostr);
-        res.writeHead(200, { "Content-Type": "text/plain" });
-        res.end(echo);
-        log(`wecom[${account.accountId}]: URL verification OK`);
-      } catch (err) {
-        error(`wecom[${account.accountId}]: URL verification failed: ${err}`);
-        res.writeHead(400, { "Content-Type": "text/plain" });
-        res.end("verify failed");
+      for (const handler of handlers.values()) {
+        try {
+          if (!handler.crypto.checkSignature(msgSignature, timestamp, nonce, echostr)) continue;
+          const echo = handler.crypto.verifyUrl(msgSignature, timestamp, nonce, echostr);
+          res.writeHead(200, { "Content-Type": "text/plain" });
+          res.end(echo);
+          log(`wecom[${handler.accountId}]: URL verification OK`);
+          return;
+        } catch {
+          // signature didn't match or decrypt failed, try next
+        }
       }
+      error("wecom: URL verification failed — no account matched the signature");
+      res.writeHead(400, { "Content-Type": "text/plain" });
+      res.end("verify failed");
       return;
     }
 
@@ -78,21 +97,36 @@ function startWebhookServer(params: {
       res.writeHead(200, { "Content-Type": "text/plain" });
       res.end("success");
 
-      // Process asynchronously
-      try {
-        const xml = crypto.decryptMessage(body, msgSignature, timestamp, nonce);
-        handleWeComMessage({
-          cfg,
-          xml,
-          runtime,
-          chatHistories,
-          accountId: account.accountId,
-        }).catch((err) => {
-          error(`wecom[${account.accountId}]: handle message error: ${err}`);
-        });
-      } catch (err) {
-        error(`wecom[${account.accountId}]: decrypt failed: ${err}`);
+      // Extract <Encrypt> to match signature against registered accounts
+      const encryptMatch = body.match(/<Encrypt><!\[CDATA\[(.*?)\]\]><\/Encrypt>/s);
+      if (!encryptMatch) {
+        error("wecom: no <Encrypt> block in POST body");
+        return;
       }
+      const encrypted = encryptMatch[1]!;
+
+      for (const handler of handlers.values()) {
+        if (!handler.crypto.checkSignature(msgSignature, timestamp, nonce, encrypted)) continue;
+
+        // Matched — decrypt and handle
+        try {
+          const xml = handler.crypto.decryptMessage(body, msgSignature, timestamp, nonce);
+          handleWeComMessage({
+            cfg,
+            xml,
+            runtime,
+            chatHistories: handler.chatHistories,
+            accountId: handler.accountId,
+          }).catch((err) => {
+            error(`wecom[${handler.accountId}]: handle message error: ${err}`);
+          });
+        } catch (err) {
+          error(`wecom[${handler.accountId}]: decrypt failed: ${err}`);
+        }
+        return;
+      }
+
+      error("wecom: POST message — no account matched the signature");
       return;
     }
 
@@ -100,18 +134,13 @@ function startWebhookServer(params: {
     res.end("method not allowed");
   });
 
-  // Cleanup on abort
-  abortSignal?.addEventListener("abort", () => {
-    server.close();
-    httpServers.delete(account.accountId);
-    log(`wecom[${account.accountId}]: server stopped`);
-  });
-
   server.listen(port, "127.0.0.1", () => {
-    log(`wecom[${account.accountId}]: webhook server listening on 127.0.0.1:${port}`);
+    log(`webhook server listening on 127.0.0.1:${port}`);
   });
 
-  httpServers.set(account.accountId, server);
+  const entry = { server, handlers, cfg, runtime };
+  sharedServers.set(key, entry);
+  return entry;
 }
 
 export async function monitorWeComProvider(opts: MonitorWeComOpts) {
@@ -124,17 +153,40 @@ export async function monitorWeComProvider(opts: MonitorWeComOpts) {
     return;
   }
 
-  // Stop existing server
-  const existing = httpServers.get(account.accountId);
-  if (existing) {
-    existing.close();
-    httpServers.delete(account.accountId);
+  const log = opts.runtime?.log ?? console.log;
+  const port = account.config?.webhookPort ?? 9001;
+  const path = account.config?.webhookPath ?? "/wecom/callback";
+  const key = `${port}:${path}`;
+
+  // Get or create the shared server for this port+path
+  let entry = sharedServers.get(key);
+  if (!entry) {
+    entry = createSharedServer({ key, port, path, cfg, runtime: opts.runtime });
   }
 
-  startWebhookServer({
-    cfg,
+  // Remove existing handler for this account (hot-reload)
+  entry!.handlers.delete(account.accountId);
+
+  // Register handler
+  const handler: AccountHandler = {
+    accountId: account.accountId,
+    crypto: new WeComCrypto(account.token, account.encodingAesKey, account.corpId),
     account,
-    runtime: opts.runtime,
-    abortSignal: opts.abortSignal,
+    chatHistories: new Map(),
+  };
+  entry!.handlers.set(account.accountId, handler);
+  log(`wecom[${account.accountId}]: registered on port ${port}`);
+
+  // Cleanup on abort — remove handler; close server if no handlers remain
+  opts.abortSignal?.addEventListener("abort", () => {
+    const e = sharedServers.get(key);
+    if (!e) return;
+    e.handlers.delete(account.accountId);
+    log(`wecom[${account.accountId}]: unregistered from port ${port}`);
+    if (e.handlers.size === 0) {
+      e.server.close();
+      sharedServers.delete(key);
+      log(`webhook server on port ${port} closed (no more accounts)`);
+    }
   });
 }
