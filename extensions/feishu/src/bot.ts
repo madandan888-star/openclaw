@@ -535,7 +535,8 @@ export async function handleFeishuMessage(params: {
   chatHistories?: Map<string, HistoryEntry[]>;
   accountId?: string;
   /** @internal Marks this as a cross-bot dispatch to prevent infinite loops. */
-  _fromCrossBotDispatch?: boolean;
+  /** Cross-bot dispatch depth (0 = not from cross-bot, 1+ = depth of chain). */
+  _crossBotDepth?: number;
   /** @internal Override sender display name (avoids API lookup for bot-to-bot). */
   _senderNameOverride?: string;
 }): Promise<void> {
@@ -563,7 +564,7 @@ export async function handleFeishuMessage(params: {
   // Cross-bot dispatch handles bot-to-bot communication — processing the WebSocket
   // event as well would cause duplicate agent runs AND 400 errors when the bot tries
   // to message.reply to another bot's message.
-  if (isGroup && !params._fromCrossBotDispatch) {
+  if (isGroup && !params._crossBotDepth) {
     const senderOpenId = event.sender.sender_id.open_id;
     if (senderOpenId) {
       for (const accId of getRegisteredFeishuAccountIds()) {
@@ -1053,10 +1054,10 @@ export async function handleFeishuMessage(params: {
       runtime: runtime as RuntimeEnv,
       chatId: ctx.chatId,
       chatType: ctx.chatType,
-      replyToMessageId: params._fromCrossBotDispatch ? undefined : ctx.messageId,
+      replyToMessageId: params._crossBotDepth ? undefined : ctx.messageId,
       mentionTargets: ctx.mentionTargets,
       accountId: account.accountId,
-      skipCrossBotDispatch: params._fromCrossBotDispatch,
+      crossBotDepth: params._crossBotDepth ?? 0,
     });
 
     log(`feishu[${account.accountId}]: dispatching to agent (session=${route.sessionKey})`);

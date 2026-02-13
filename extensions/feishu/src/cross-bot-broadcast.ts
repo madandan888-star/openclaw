@@ -165,6 +165,8 @@ export type DispatchCrossBotMentionsParams = {
   messageId: string;
   /** OpenIDs from the auto-mention targets in the reply. */
   mentionTargetOpenIds?: string[];
+  /** Current cross-bot dispatch depth. */
+  crossBotDepth?: number;
   runtime?: RuntimeEnv;
   log?: (msg: string) => void;
 };
@@ -189,6 +191,7 @@ export async function dispatchCrossBotMentions(
     text,
     messageId,
     mentionTargetOpenIds,
+    crossBotDepth = 0,
     runtime,
     log,
   } = params;
@@ -247,7 +250,7 @@ export async function dispatchCrossBotMentions(
         runtime,
         chatHistories: targetReg.chatHistories,
         accountId: targetReg.accountId,
-        _fromCrossBotDispatch: true,
+        _crossBotDepth: crossBotDepth,
         _senderNameOverride: senderBotName,
       });
       log?.(`cross-bot-dispatch: dispatched to ${targetReg.accountId} successfully`);

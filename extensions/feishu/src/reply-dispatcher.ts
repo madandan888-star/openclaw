@@ -34,8 +34,8 @@ export type CreateFeishuReplyDispatcherParams = {
   replyToMessageId?: string;
   mentionTargets?: MentionTarget[];
   accountId?: string;
-  /** Skip cross-bot @mention dispatch (set when this reply originates from a cross-bot dispatch). */
-  skipCrossBotDispatch?: boolean;
+  /** Cross-bot dispatch depth (0 = not from cross-bot). Dispatch continues if depth < maxCrossBotDepth. */
+  crossBotDepth?: number;
 };
 
 export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherParams) {
@@ -48,8 +48,10 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
     replyToMessageId,
     mentionTargets,
     accountId,
-    skipCrossBotDispatch,
+    crossBotDepth = 0,
   } = params;
+
+  const MAX_CROSS_BOT_DEPTH = 12;
 
   const account = resolveFeishuAccount({ cfg, accountId });
   const prefixContext = createReplyPrefixContext({ cfg, agentId });
@@ -247,7 +249,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
         }
 
         // After all chunks are sent, dispatch to any @mentioned bots
-        if (chatType === "group" && lastSentMessageId && !skipCrossBotDispatch) {
+        if (chatType === "group" && lastSentMessageId && crossBotDepth < MAX_CROSS_BOT_DEPTH) {
           const mentionTargetOpenIds = mentionTargets?.map((m) => m.openId);
           dispatchCrossBotMentions({
             cfg,
@@ -257,6 +259,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
             text,
             messageId: lastSentMessageId,
             mentionTargetOpenIds,
+            crossBotDepth: crossBotDepth + 1,
             runtime: params.runtime,
             log: (msg) => params.runtime.log?.(msg),
           }).catch((err) => {
