@@ -628,6 +628,9 @@ export async function runEmbeddedAttempt(
         });
       };
 
+      log.debug(
+        `subscribe params: reasoningLevel=${params.reasoningLevel} hasOnReasoningStream=${typeof params.onReasoningStream}`,
+      );
       const subscription = subscribeEmbeddedPiSession({
         session: activeSession,
         runId: params.runId,

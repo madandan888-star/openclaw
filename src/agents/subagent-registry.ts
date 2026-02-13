@@ -296,6 +296,7 @@ export function registerSubagentRun(params: {
   task: string;
   cleanup: "delete" | "keep";
   label?: string;
+  model?: string;
   runTimeoutSeconds?: number;
 }) {
   const now = Date.now();
@@ -324,6 +325,7 @@ export function registerSubagentRun(params: {
     runId: params.runId,
     label: params.label,
     task: params.task,
+    model: params.model,
     origin: requesterOrigin,
   });
   if (archiveAfterMs) {

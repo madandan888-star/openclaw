@@ -292,6 +292,7 @@ export function createSessionsSpawnTool(opts?: {
         task,
         cleanup,
         label: label || undefined,
+        model: resolvedModel || undefined,
         runTimeoutSeconds,
       });
 
