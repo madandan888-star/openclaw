@@ -746,6 +746,50 @@ export async function handleFeishuMessage(params: {
       log,
       accountId: account.accountId,
     });
+
+    // If this is an audio message, attempt ASR so agents that can't process audio can still respond.
+    if (event.message.message_type === "audio" && mediaList.length > 0) {
+      try {
+        const audioPath = mediaList[0]?.path;
+        if (audioPath) {
+          const { readFile } = await import("node:fs/promises");
+          const path = await import("node:path");
+
+          const audioBuf = await readFile(audioPath);
+          const form = new FormData();
+          form.append("file", new Blob([audioBuf]), path.basename(audioPath));
+
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 10_000);
+          try {
+            const resp = await fetch("http://localhost:9882/transcribe", {
+              method: "POST",
+              body: form,
+              signal: controller.signal,
+            });
+
+            if (resp.ok) {
+              const data = (await resp.json()) as { text?: string } | undefined;
+              const text = typeof data?.text === "string" ? data.text.trim() : "";
+              if (text) {
+                ctx = { ...ctx, content: `[语音转文字] ${text}` };
+                log(`feishu[${account.accountId}]: ASR transcribed audio: ${text}`);
+              }
+            } else {
+              const body = await resp.text().catch(() => "");
+              log(
+                `feishu[${account.accountId}]: ASR failed (status=${resp.status}), keeping original audio. ${body}`,
+              );
+            }
+          } finally {
+            clearTimeout(timeout);
+          }
+        }
+      } catch (err) {
+        log(`feishu[${account.accountId}]: ASR failed, keeping original audio: ${String(err)}`);
+      }
+    }
+
     const mediaPayload = buildFeishuMediaPayload(mediaList);
 
     // Fetch quoted/replied message content if parentId exists
