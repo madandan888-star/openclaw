@@ -1,5 +1,5 @@
 import type { ChannelOutboundAdapter } from "openclaw/plugin-sdk";
-import { sendWeComGroupText, sendWeComImage, sendWeComText } from "./send.js";
+import { sendWeComGroupText, sendWeComImage, sendWeComText, sendWeComVoice } from "./send.js";
 
 function resolveWeComDeliveryTarget(to: string): { kind: "user" | "chat"; id: string } {
   // DeliveryContext.to uses "user:LongYu" format; WeCom API expects bare userid.
@@ -50,7 +50,27 @@ export const wecomOutbound: ChannelOutboundAdapter = {
 
     const resolvedTo = target.id;
     const isImage = !!url && /\.(jpe?g|png|gif|bmp)(\?.*)?$/i.test(url);
-    console.log("[wecom] sendMedia: url=", url, "isImage=", isImage);
+    const isAudio = !!url && /\.(mp3|wav|amr|ogg|m4a)(\?.*)?$/i.test(url);
+    console.log("[wecom] sendMedia: url=", url, "isImage=", isImage, "isAudio=", isAudio);
+
+    if (url && isAudio) {
+      if (text?.trim()) {
+        await sendWeComText({
+          cfg,
+          to: resolvedTo,
+          text,
+          accountId: accountId ?? undefined,
+        });
+      }
+      const okVoice = await sendWeComVoice({
+        cfg,
+        to: resolvedTo,
+        audioPath: url,
+        accountId: accountId ?? undefined,
+      });
+      return { channel: "wecom", ok: okVoice };
+    }
+
     if (url && isImage) {
       if (text?.trim()) {
         const okText = await sendWeComText({

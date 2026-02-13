@@ -274,6 +274,103 @@ export async function sendWeComImage(params: {
   return false;
 }
 
+export async function sendWeComVoice(params: {
+  cfg: ClawdbotConfig;
+  to: string;
+  audioPath: string;
+  accountId?: string;
+}): Promise<boolean> {
+  const account = resolveWeComAccount({ cfg: params.cfg, accountId: params.accountId });
+  const fs = await import("fs");
+  const { execSync } = await import("child_process");
+
+  // Convert to AMR if needed
+  let amrPath = params.audioPath;
+  if (!params.audioPath.endsWith(".amr")) {
+    amrPath = params.audioPath.replace(/\.[^.]+$/, ".amr");
+    try {
+      execSync(
+        `ffmpeg -y -i "${params.audioPath}" -ar 8000 -ac 1 -c:a libopencore_amrnb -b:a 12200 "${amrPath}"`,
+        { stdio: "pipe" },
+      );
+    } catch (err) {
+      console.error("[wecom] sendWeComVoice: ffmpeg AMR conversion failed:", err);
+      return false;
+    }
+  }
+
+  if (!fs.existsSync(amrPath)) {
+    console.error("[wecom] sendWeComVoice: AMR file not found:", amrPath);
+    return false;
+  }
+
+  const amrBuf = fs.readFileSync(amrPath);
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const token = await getAccessToken({ cfg: params.cfg, accountId: params.accountId });
+
+      const uploadUrl = `https://bot.youfuli.cn/wecom-api/cgi-bin/media/upload?access_token=${token}&type=voice`;
+      const form = new FormData();
+      const blob = new Blob([amrBuf], { type: "audio/amr" });
+      form.append("media", blob, "voice.amr");
+
+      const uploadRes = await fetch(uploadUrl, {
+        method: "POST",
+        body: form,
+        signal: AbortSignal.timeout(15_000),
+      });
+
+      const uploadJson = (await uploadRes.json()) as {
+        errcode: number;
+        errmsg: string;
+        media_id?: string;
+      };
+
+      if (uploadJson.errcode !== 0 || !uploadJson.media_id) {
+        console.error("[wecom] sendWeComVoice: upload failed:", JSON.stringify(uploadJson));
+        if (uploadJson.errcode === 40014 || uploadJson.errcode === 42001) {
+          tokenCache.delete(account.accountId);
+        }
+        throw new Error(`WeCom voice upload failed: ${uploadJson.errcode} ${uploadJson.errmsg}`);
+      }
+
+      const sendUrl = `https://bot.youfuli.cn/wecom-api/cgi-bin/message/send?access_token=${token}`;
+      const body = {
+        touser: params.to,
+        msgtype: "voice",
+        agentid: account.agentId,
+        voice: { media_id: uploadJson.media_id },
+        safe: 0,
+      };
+
+      const sendRes = await fetch(sendUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(15_000),
+      });
+
+      const sendJson = (await sendRes.json()) as { errcode: number; errmsg: string };
+      if (sendJson.errcode === 0) {
+        console.log("[wecom] sendWeComVoice: success, mediaId=", uploadJson.media_id);
+        return true;
+      }
+      console.error("[wecom] sendWeComVoice: send failed:", JSON.stringify(sendJson));
+
+      if (sendJson.errcode === 40014 || sendJson.errcode === 42001) {
+        tokenCache.delete(account.accountId);
+      }
+    } catch {
+      // retry
+    }
+
+    await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+  }
+
+  return false;
+}
+
 export async function sendWeComMarkdown(params: {
   cfg: ClawdbotConfig;
   to: string;
