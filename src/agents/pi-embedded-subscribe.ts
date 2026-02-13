@@ -295,6 +295,7 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
     return `\`\`\`txt\n${trimmed}\n\`\`\``;
   };
   const emitToolSummary = (toolName?: string, meta?: string) => {
+    log.debug(`emitToolSummary: tool=${toolName} hasOnToolResult=${!!params.onToolResult}`);
     if (!params.onToolResult) {
       return;
     }
@@ -302,10 +303,12 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
       markdown: useMarkdown,
     });
     const { text: cleanedText, mediaUrls } = parseReplyDirectives(agg);
+    log.debug(`emitToolSummary: agg=${agg?.slice(0, 80)} cleanedText=${cleanedText?.slice(0, 80)}`);
     if (!cleanedText && (!mediaUrls || mediaUrls.length === 0)) {
       return;
     }
     try {
+      log.debug(`emitToolSummary: calling onToolResult with text=${cleanedText?.slice(0, 80)}`);
       void params.onToolResult({
         text: cleanedText,
         mediaUrls: mediaUrls?.length ? mediaUrls : undefined,

@@ -443,9 +443,22 @@ export async function runAgentTurnWithFallback(params: {
                   // `subscribeEmbeddedPiSession` may invoke tool callbacks without awaiting them.
                   // If a tool callback starts typing after the run finalized, we can end up with
                   // a typing loop that never sees a matching markRunComplete(). Track and drain.
+                  logVerbose(`onToolResult callback invoked: text=${payload.text?.slice(0, 80)}`);
                   const task = (async () => {
-                    const { text, skip } = normalizeStreamingText(payload);
-                    if (skip) {
+                    // Tool summaries are discrete status updates (e.g. "🔧 Exec: ls"),
+                    // not streaming text fragments. Bypass the allowPartialStream gate
+                    // so they are delivered even when reasoning streaming is active.
+                    let text = payload.text;
+                    if (isSilentReplyText(text, SILENT_REPLY_TOKEN)) {
+                      return;
+                    }
+                    if (!text) {
+                      return;
+                    }
+                    text = sanitizeUserFacingText(text, {
+                      errorContext: false,
+                    });
+                    if (!text.trim()) {
                       return;
                     }
                     await params.typingSignals.signalTextDelta(text);

@@ -12,6 +12,7 @@ type MonitorSession = {
   origin: DeliveryContext;
   startedAt: number;
   currentTool?: { name: string; toolCallId: string; args?: Record<string, unknown> };
+  lastAssistantSnippet?: string;
   unsubscribe?: () => void;
   stopped: boolean;
 };
@@ -123,6 +124,13 @@ function buildUnifiedProgressMessage(): string {
     if (session.currentTool) {
       const detail = summarizeToolCall(session.currentTool.name, session.currentTool.args);
       return `• ${modelTag} | ${label} | ${detail} | ${elapsed}`;
+    }
+    if (session.lastAssistantSnippet) {
+      const snippet =
+        session.lastAssistantSnippet.length > 50
+          ? session.lastAssistantSnippet.slice(0, 47) + "..."
+          : session.lastAssistantSnippet;
+      return `• ${modelTag} | ${label} | 🤔 ${snippet} | ${elapsed}`;
     }
     return `• ${modelTag} | ${label} | 🤔 思考中... | ${elapsed}`;
   });
@@ -258,6 +266,17 @@ export function startSubagentMonitor(params: {
           session.currentTool = undefined;
         }
       }
+    } else if (evt.stream === "assistant") {
+      // Capture latest assistant text snippet for "thinking" display
+      const text = typeof evt.data?.text === "string" ? evt.data.text : "";
+      if (text) {
+        // Get the last meaningful line/sentence as snippet
+        const lines = text.split("\n").filter((l: string) => l.trim());
+        const last = lines[lines.length - 1] ?? "";
+        session.lastAssistantSnippet = last.trim();
+      }
+      // Clear tool when assistant is speaking (tool finished)
+      session.currentTool = undefined;
     } else if (evt.stream === "lifecycle") {
       const phase = evt.data?.phase;
       if (phase === "end" || phase === "error") {

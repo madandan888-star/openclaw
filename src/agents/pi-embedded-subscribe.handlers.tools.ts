@@ -69,6 +69,9 @@ export async function handleToolExecutionStart(
   );
 
   const shouldEmitToolEvents = ctx.shouldEmitToolResult();
+  ctx.log.debug(
+    `tool-summary-check: shouldEmit=${shouldEmitToolEvents} hasOnToolResult=${!!ctx.params.onToolResult} tool=${toolName}`,
+  );
   emitAgentEvent({
     runId: ctx.params.runId,
     stream: "tool",
