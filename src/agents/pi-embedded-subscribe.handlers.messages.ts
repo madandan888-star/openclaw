@@ -64,6 +64,28 @@ export function handleMessageUpdate(
       : undefined;
   const evtType = typeof assistantRecord?.type === "string" ? assistantRecord.type : "";
 
+  // Debug: log all assistant message event types to diagnose thinking stream.
+  if (evtType && evtType !== "text_delta") {
+    ctx.log.debug(
+      `[handleMessageUpdate] evtType=${evtType} streamReasoning=${ctx.state.streamReasoning}`,
+    );
+  }
+
+  // Stream native thinking deltas (Anthropic extended thinking) for reasoning stream mode.
+  if (evtType === "thinking_delta" || evtType === "thinking_start" || evtType === "thinking_end") {
+    if (ctx.state.streamReasoning) {
+      const thinkDelta = typeof assistantRecord?.delta === "string" ? assistantRecord.delta : "";
+      ctx.log.debug(
+        `[thinking] evtType=${evtType} deltaLen=${thinkDelta.length} bufferLen=${(ctx.state.nativeThinkingBuffer ?? "").length}`,
+      );
+      if (thinkDelta) {
+        ctx.state.nativeThinkingBuffer = (ctx.state.nativeThinkingBuffer ?? "") + thinkDelta;
+        ctx.emitReasoningStream(ctx.state.nativeThinkingBuffer);
+      }
+    }
+    return;
+  }
+
   if (evtType !== "text_delta" && evtType !== "text_start" && evtType !== "text_end") {
     return;
   }

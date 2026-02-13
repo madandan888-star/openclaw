@@ -50,6 +50,8 @@ export type EmbeddedPiSubscribeState = {
   assistantTextBaseline: number;
   suppressBlockChunks: boolean;
   lastReasoningSent?: string;
+  /** Accumulated native thinking content (Anthropic extended thinking deltas). */
+  nativeThinkingBuffer?: string;
 
   compactionInFlight: boolean;
   pendingCompactionRetry: number;

@@ -110,6 +110,7 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
     state.lastBlockReplyText = undefined;
     state.lastStreamedReasoning = undefined;
     state.lastReasoningSent = undefined;
+    state.nativeThinkingBuffer = undefined;
     state.suppressBlockChunks = false;
     state.assistantMessageIndex += 1;
     state.lastAssistantTextMessageIndex = -1;

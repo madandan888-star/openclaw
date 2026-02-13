@@ -239,13 +239,15 @@ export async function handleWeComMessage(params: HandleWeComMessageParams) {
   });
 
   // Create reply dispatcher
-  const { dispatcher, replyOptions, markDispatchIdle } = createWeComReplyDispatcher({
-    cfg,
-    agentId: route.agentId,
-    runtime: runtime as RuntimeEnv,
-    toUser: isGroup ? `chat:${peerId}` : fromUser,
-    accountId: account.accountId,
-  });
+  const { dispatcher, replyOptions, markDispatchIdle, flushReasoning } = createWeComReplyDispatcher(
+    {
+      cfg,
+      agentId: route.agentId,
+      runtime: runtime as RuntimeEnv,
+      toUser: isGroup ? `chat:${peerId}` : fromUser,
+      accountId: account.accountId,
+    },
+  );
 
   log(`wecom[${account.accountId}]: dispatching to agent (session=${route.sessionKey})`);
 
@@ -257,6 +259,7 @@ export async function handleWeComMessage(params: HandleWeComMessageParams) {
       replyOptions,
     });
 
+    await flushReasoning();
     markDispatchIdle();
 
     log(

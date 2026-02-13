@@ -16,6 +16,28 @@ export type CreateWeComReplyDispatcherParams = {
   accountId?: string;
 };
 
+/**
+ * Strip `formatReasoningMessage()` formatting to recover plain reasoning text.
+ * Input format: `"Reasoning:\n_line1_\n_line2_"` → `"line1\nline2"`
+ */
+function stripReasoningFormat(text: string): string {
+  let body = text;
+  // Remove leading "Reasoning:\n" prefix
+  const prefixRe = /^Reasoning:\s*\n?/i;
+  body = body.replace(prefixRe, "");
+  // Remove italic underscore wrapping per line
+  body = body
+    .split("\n")
+    .map((line) => {
+      const m = line.match(/^_(.*)_$/);
+      return m ? m[1] : line;
+    })
+    .join("\n");
+  return body.trim();
+}
+
+const REASONING_DEBOUNCE_MS = 3000;
+
 export function createWeComReplyDispatcher(params: CreateWeComReplyDispatcherParams) {
   const core = getWeComRuntime();
   const { cfg, agentId, toUser, accountId } = params;
@@ -26,12 +48,43 @@ export function createWeComReplyDispatcher(params: CreateWeComReplyDispatcherPar
 
   const prefixContext = createReplyPrefixContext({ cfg, agentId });
 
+  // --- Reasoning stream state (defined before dispatcher so deliver can flush) ---
+  let reasoningBuffer = "";
+  let reasoningSentPos = 0;
+  let reasoningTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const sendReasoningChunk = async () => {
+    const unsent = reasoningBuffer.slice(reasoningSentPos).trim();
+    if (!unsent) return;
+    reasoningSentPos = reasoningBuffer.length;
+    const message = `💭 ${unsent}`;
+    const chunks = core.channel.text.chunkTextWithMode(message, textChunkLimit, "text");
+    for (const chunk of chunks) {
+      if (groupChatId) {
+        await sendWeComGroupText({ cfg, chatId: groupChatId, text: chunk, accountId });
+      } else {
+        await sendWeComText({ cfg, to: toUser, text: chunk, accountId });
+      }
+    }
+  };
+
+  const flushReasoningInternal = async () => {
+    if (reasoningTimer) {
+      clearTimeout(reasoningTimer);
+      reasoningTimer = undefined;
+    }
+    await sendReasoningChunk();
+  };
+
   const { dispatcher, replyOptions, markDispatchIdle } =
     core.channel.reply.createReplyDispatcherWithTyping({
       responsePrefix: prefixContext.responsePrefix,
       responsePrefixContextProvider: prefixContext.responsePrefixContextProvider,
       humanDelay: core.channel.reply.resolveHumanDelayConfig(cfg, agentId),
       deliver: async (payload: ReplyPayload) => {
+        // Flush pending reasoning before delivering any reply to preserve order.
+        await flushReasoningInternal();
+
         const text = payload.text ?? "";
         if (text.trim()) {
           const chunks = core.channel.text.chunkTextWithMode(text, textChunkLimit, "text");
@@ -72,12 +125,31 @@ export function createWeComReplyDispatcher(params: CreateWeComReplyDispatcherPar
       },
     });
 
+  const onReasoningStream = async (payload: ReplyPayload) => {
+    const raw = payload.text ?? "";
+    if (!raw) return;
+    const plain = stripReasoningFormat(raw);
+    if (!plain) return;
+    reasoningBuffer = plain;
+    // Debounce: reset timer on each delta, send after idle
+    if (reasoningTimer) clearTimeout(reasoningTimer);
+    reasoningTimer = setTimeout(() => {
+      sendReasoningChunk().catch((err) => {
+        params.runtime.error?.(
+          `wecom[${account.accountId}] reasoning stream failed: ${String(err)}`,
+        );
+      });
+    }, REASONING_DEBOUNCE_MS);
+  };
+
   return {
     dispatcher,
     replyOptions: {
       ...replyOptions,
       onModelSelected: prefixContext.onModelSelected,
+      onReasoningStream,
     },
     markDispatchIdle,
+    flushReasoning: flushReasoningInternal,
   };
 }
