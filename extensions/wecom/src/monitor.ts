@@ -76,7 +76,7 @@ function handleAiBotPost(params: {
     try {
       const result = handler.crypto.decrypt(encrypted);
       const expectedId = handler.account.botId || handler.account.corpId;
-      if (result.corpId !== expectedId) {
+      if (result.corpId && expectedId && result.corpId !== expectedId) {
         log(
           `wecom[${handler.accountId}]: AI bot appId mismatch (expected=${expectedId}, got=${result.corpId}), trying next`,
         );
