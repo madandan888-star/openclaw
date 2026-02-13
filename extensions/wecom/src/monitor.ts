@@ -100,12 +100,17 @@ function handleAiBotPost(params: {
     }
 
     log(
-      `wecom[${handler.accountId}]: AI bot recv msgtype=${msg.msgtype} from=${(msg.from as Record<string, unknown>)?.userid}`,
+      `wecom[${handler.accountId}]: AI bot recv msgtype=${msg.msgtype} from=${(msg.from as Record<string, unknown>)?.userid} keys=${Object.keys(msg).join(",")}`,
     );
+    if (msg.msgtype === "text") {
+      log(`wecom[${handler.accountId}]: AI bot text payload: ${JSON.stringify(msg.text)}`);
+    }
 
     // --- Streaming refresh event ---
-    if (msg.msgtype === "streaming") {
-      const streamId = (msg.streaming as Record<string, unknown>)?.id as string | undefined;
+    if (msg.msgtype === "streaming" || msg.msgtype === "stream") {
+      const streamId = ((msg.streaming ?? msg.stream) as Record<string, unknown>)?.id as
+        | string
+        | undefined;
       if (!streamId) {
         res.writeHead(200, { "Content-Type": "text/plain" });
         res.end("success");
