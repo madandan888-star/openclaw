@@ -201,11 +201,29 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
     }
   };
 
+  const COMPACTION_SAFETY_TIMEOUT_MS = 90_000; // 90s safety net
+  let compactionSafetyTimer: ReturnType<typeof setTimeout> | undefined;
+
   const ensureCompactionPromise = () => {
     if (!state.compactionRetryPromise) {
       state.compactionRetryPromise = new Promise((resolve) => {
         state.compactionRetryResolve = resolve;
       });
+      // Safety timeout: if compaction events are lost (e.g., gateway restart
+      // severs the event stream), auto-resolve so the session doesn't hang forever.
+      clearTimeout(compactionSafetyTimer);
+      compactionSafetyTimer = setTimeout(() => {
+        if (state.compactionInFlight || state.pendingCompactionRetry > 0) {
+          log.warn(
+            `compaction safety timeout (${COMPACTION_SAFETY_TIMEOUT_MS}ms): force-resolving compaction wait`,
+          );
+          state.compactionInFlight = false;
+          state.pendingCompactionRetry = 0;
+          state.compactionRetryResolve?.();
+          state.compactionRetryResolve = undefined;
+          state.compactionRetryPromise = null;
+        }
+      }, COMPACTION_SAFETY_TIMEOUT_MS);
     }
   };
 
@@ -220,6 +238,7 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
     }
     state.pendingCompactionRetry -= 1;
     if (state.pendingCompactionRetry === 0 && !state.compactionInFlight) {
+      clearTimeout(compactionSafetyTimer);
       state.compactionRetryResolve?.();
       state.compactionRetryResolve = undefined;
       state.compactionRetryPromise = null;
@@ -228,6 +247,7 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
 
   const maybeResolveCompactionWait = () => {
     if (state.pendingCompactionRetry === 0 && !state.compactionInFlight) {
+      clearTimeout(compactionSafetyTimer);
       state.compactionRetryResolve?.();
       state.compactionRetryResolve = undefined;
       state.compactionRetryPromise = null;
