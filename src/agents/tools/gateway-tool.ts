@@ -7,7 +7,7 @@ import {
   type RestartSentinelPayload,
   writeRestartSentinel,
 } from "../../infra/restart-sentinel.js";
-import { scheduleGatewaySigusr1Restart } from "../../infra/restart.js";
+import { scheduleGatewayHardRestart, scheduleGatewaySigusr1Restart } from "../../infra/restart.js";
 import { stringEnum } from "../schema/typebox.js";
 import { type AnyAgentTool, jsonResult, readStringParam } from "./common.js";
 import { callGatewayTool } from "./gateway.js";
@@ -42,6 +42,7 @@ const GATEWAY_ACTIONS = [
 const GatewayToolSchema = Type.Object({
   action: stringEnum(GATEWAY_ACTIONS),
   // restart
+  mode: Type.Optional(stringEnum(["soft", "hard"])),
   delayMs: Type.Optional(Type.Number()),
   reason: Type.Optional(Type.String()),
   // config.get, config.schema, config.apply, update.run
@@ -69,7 +70,7 @@ export function createGatewayTool(opts?: {
     label: "Gateway",
     name: "gateway",
     description:
-      "Restart, apply config, or update the gateway in-place (SIGUSR1). Use config.patch for safe partial config updates (merges with existing). Use config.apply only when replacing entire config. Both trigger restart after writing.",
+      'Restart, apply config, or update the gateway. For restart: mode="soft" (default) uses SIGUSR1 hot-restart — fast, keeps sessions alive, but does NOT reload extensions/plugins. mode="hard" does a full process restart via launchctl kickstart (service stays registered, KeepAlive works) — reloads everything including extensions. IMPORTANT: use mode="hard" when you changed extension/plugin code; NEVER use `kill`, `launchctl bootout`, or `openclaw gateway stop` to restart — these unload the service and prevent auto-restart. Use config.patch for safe partial config updates (merges with existing). Use config.apply only when replacing entire config. Both trigger restart after writing.',
     parameters: GatewayToolSchema,
     execute: async (_toolCallId, args) => {
       const params = args as Record<string, unknown>;
@@ -140,9 +141,15 @@ export function createGatewayTool(opts?: {
         } catch {
           // ignore: sentinel is best-effort
         }
+        const restartMode =
+          typeof params.mode === "string" && params.mode === "hard" ? "hard" : "soft";
         console.info(
-          `gateway tool: restart requested (delayMs=${delayMs ?? "default"}, reason=${reason ?? "none"})`,
+          `gateway tool: restart requested (mode=${restartMode}, delayMs=${delayMs ?? "default"}, reason=${reason ?? "none"})`,
         );
+        if (restartMode === "hard") {
+          const scheduled = scheduleGatewayHardRestart({ delayMs, reason });
+          return jsonResult(scheduled);
+        }
         const scheduled = scheduleGatewaySigusr1Restart({
           delayMs,
           reason,

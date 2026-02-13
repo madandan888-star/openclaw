@@ -213,6 +213,56 @@ export function scheduleGatewaySigusr1Restart(opts?: {
   };
 }
 
+export type ScheduledHardRestart = {
+  ok: boolean;
+  method: "launchctl" | "systemd" | "supervisor";
+  delayMs: number;
+  reason?: string;
+  mode: "hard";
+};
+
+/**
+ * Schedule a full process restart via launchctl kickstart -k (macOS) or
+ * systemctl restart (Linux).  Unlike SIGUSR1, this kills the current process
+ * and lets the service manager start a fresh one — all extensions and plugins
+ * are fully reloaded.  The service stays registered (no bootout), so
+ * KeepAlive / Restart=always continues to work.
+ */
+export function scheduleGatewayHardRestart(opts?: {
+  delayMs?: number;
+  reason?: string;
+}): ScheduledHardRestart {
+  const delayMsRaw =
+    typeof opts?.delayMs === "number" && Number.isFinite(opts.delayMs)
+      ? Math.floor(opts.delayMs)
+      : 2000;
+  const delayMs = Math.min(Math.max(delayMsRaw, 500), 60_000);
+  const reason =
+    typeof opts?.reason === "string" && opts.reason.trim()
+      ? opts.reason.trim().slice(0, 200)
+      : undefined;
+  const method: ScheduledHardRestart["method"] =
+    process.platform === "darwin"
+      ? "launchctl"
+      : process.platform === "linux"
+        ? "systemd"
+        : "supervisor";
+  setTimeout(() => {
+    try {
+      triggerOpenClawRestart();
+    } catch {
+      // Fallback to SIGUSR1 if hard restart fails
+      authorizeGatewaySigusr1Restart(0);
+      if (process.listenerCount("SIGUSR1") > 0) {
+        process.emit("SIGUSR1");
+      } else {
+        process.kill(process.pid, "SIGUSR1");
+      }
+    }
+  }, delayMs);
+  return { ok: true, method, delayMs, reason, mode: "hard" };
+}
+
 export const __testing = {
   resetSigusr1State() {
     sigusr1AuthorizedCount = 0;
