@@ -91,6 +91,7 @@ export async function handleWeComMessage(params: HandleWeComMessageParams) {
         const mediaResp = await fetch(mediaUrl);
         if (!mediaResp.ok) throw new Error(`media download failed: ${mediaResp.status}`);
         const amrBuf = Buffer.from(await mediaResp.arrayBuffer());
+        log(`wecom[${account.accountId}]: voice downloaded ${amrBuf.length} bytes`);
 
         // Convert AMR to WAV using ffmpeg
         const { execSync } = await import("child_process");
@@ -98,7 +99,16 @@ export async function handleWeComMessage(params: HandleWeComMessageParams) {
         const tmpWav = `/tmp/wecom_voice_${msgId}.wav`;
         const fs = await import("fs");
         fs.writeFileSync(tmpAmr, amrBuf);
-        execSync(`ffmpeg -y -i ${tmpAmr} -ar 16000 -ac 1 ${tmpWav} 2>/dev/null`);
+        try {
+          execSync(`ffmpeg -y -i "${tmpAmr}" -ar 16000 -ac 1 "${tmpWav}" 2>&1`);
+        } catch (ffErr: any) {
+          log(
+            `wecom[${account.accountId}]: ffmpeg error: ${ffErr.stderr?.toString() || ffErr.message}`,
+          );
+          throw ffErr;
+        }
+        const wavStat = fs.statSync(tmpWav);
+        log(`wecom[${account.accountId}]: wav converted ${wavStat.size} bytes`);
 
         // Send to Qwen3-ASR API
         const wavBuf = fs.readFileSync(tmpWav);
@@ -108,7 +118,9 @@ export async function handleWeComMessage(params: HandleWeComMessageParams) {
           method: "POST",
           body: formData,
         });
-        const asrResult = (await asrResp.json()) as { text?: string };
+        const asrRaw = await asrResp.text();
+        log(`wecom[${account.accountId}]: ASR raw response: ${asrRaw}`);
+        const asrResult = JSON.parse(asrRaw) as { text?: string };
         effectiveContent = (asrResult.text || "").trim();
         log(`wecom[${account.accountId}]: ASR result: ${effectiveContent}`);
 
