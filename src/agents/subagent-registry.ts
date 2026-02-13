@@ -23,6 +23,7 @@ export type SubagentRunRecord = {
   task: string;
   cleanup: "delete" | "keep";
   label?: string;
+  model?: string;
   createdAt: number;
   startedAt?: number;
   endedAt?: number;
@@ -91,6 +92,15 @@ function resumeSubagentRun(runId: string) {
   // Wait for completion again after restart.
   const cfg = loadConfig();
   const waitTimeoutMs = resolveSubagentWaitTimeoutMs(cfg, undefined);
+  // Re-register the monitor so progress reports resume after restart.
+  const requesterOrigin = normalizeDeliveryContext(entry.requesterOrigin);
+  startSubagentMonitor({
+    runId: entry.runId,
+    label: entry.label,
+    task: entry.task,
+    model: entry.model,
+    origin: requesterOrigin,
+  });
   void waitForSubagentCompletion(runId, waitTimeoutMs);
   resumedRuns.add(runId);
 }
@@ -314,6 +324,7 @@ export function registerSubagentRun(params: {
     task: params.task,
     cleanup: params.cleanup,
     label: params.label,
+    model: params.model,
     createdAt: now,
     startedAt: now,
     archiveAtMs,
