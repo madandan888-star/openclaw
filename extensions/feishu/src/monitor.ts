@@ -24,12 +24,14 @@ const wsClients = new Map<string, Lark.WSClient>();
 const httpServers = new Map<string, http.Server>();
 const botOpenIds = new Map<string, string>();
 
-async function fetchBotOpenId(account: ResolvedFeishuAccount): Promise<string | undefined> {
+async function fetchBotInfo(
+  account: ResolvedFeishuAccount,
+): Promise<{ openId?: string; name?: string }> {
   try {
     const result = await probeFeishu(account);
-    return result.ok ? result.botOpenId : undefined;
+    return result.ok ? { openId: result.botOpenId, name: result.botName } : {};
   } catch {
-    return undefined;
+    return {};
   }
 }
 
@@ -113,9 +115,13 @@ async function monitorSingleAccount(params: MonitorAccountParams): Promise<void>
   const log = runtime?.log ?? console.log;
 
   // Fetch bot open_id
-  const botOpenId = await fetchBotOpenId(account);
+  const botInfo = await fetchBotInfo(account);
+  const botOpenId = botInfo.openId;
+  const apiBotName = botInfo.name;
   botOpenIds.set(accountId, botOpenId ?? "");
-  log(`feishu[${accountId}]: bot open_id resolved: ${botOpenId ?? "unknown"}`);
+  log(
+    `feishu[${accountId}]: bot open_id resolved: ${botOpenId ?? "unknown"}, name: ${apiBotName ?? "unknown"}`,
+  );
 
   const connectionMode = account.config.connectionMode ?? "websocket";
   const eventDispatcher = createEventDispatcher(account);
@@ -127,7 +133,7 @@ async function monitorSingleAccount(params: MonitorAccountParams): Promise<void>
     accountId,
     chatHistories,
     botOpenId: botOpenId ?? "",
-    botName: account.name ?? accountId,
+    botName: account.name ?? apiBotName ?? accountId,
   });
 
   registerEventHandlers(eventDispatcher, {

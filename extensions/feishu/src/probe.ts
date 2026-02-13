@@ -31,7 +31,7 @@ export async function probeFeishu(creds?: FeishuClientCredentials): Promise<Feis
     return {
       ok: true,
       appId: creds.appId,
-      botName: bot?.bot_name,
+      botName: bot?.app_name || bot?.bot_name,
       botOpenId: bot?.open_id,
     };
   } catch (err) {

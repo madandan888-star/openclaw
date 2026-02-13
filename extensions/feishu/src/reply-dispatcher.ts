@@ -219,6 +219,9 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
         }
 
         // After all chunks are sent, dispatch to any @mentioned bots
+        params.runtime.log?.(
+          `feishu[${account.accountId}] cross-bot check: chatType=${chatType} lastSentMessageId=${lastSentMessageId} skipCrossBotDispatch=${skipCrossBotDispatch} text=${text?.slice(0, 100)}`,
+        );
         if (chatType === "group" && lastSentMessageId && !skipCrossBotDispatch) {
           const mentionTargetOpenIds = mentionTargets?.map((m) => m.openId);
           dispatchCrossBotMentions({
