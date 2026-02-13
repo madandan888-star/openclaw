@@ -5,6 +5,7 @@ export type WeComConfig = {
   secret?: string;
   token?: string;
   encodingAesKey?: string;
+  botId?: string;
   webhookPath?: string;
   webhookPort?: number;
   dmPolicy?: "open" | "pairing" | "allowlist";
@@ -26,6 +27,7 @@ export type ResolvedWeComAccount = {
   secret: string;
   token: string;
   encodingAesKey: string;
+  botId: string;
   config?: WeComConfig;
 };
 

@@ -75,6 +75,20 @@ export class WeComCrypto {
     return encrypted.toString("base64");
   }
 
+  /** Encrypt a reply and return the full JSON response envelope. */
+  encryptReply(replyJson: string): {
+    encrypt: string;
+    msgsignature: string;
+    timestamp: string;
+    nonce: string;
+  } {
+    const encrypted = this.encrypt(replyJson);
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const nonce = crypto.randomBytes(8).toString("hex");
+    const msgsignature = this.getSignature(timestamp, nonce, encrypted);
+    return { encrypt: encrypted, msgsignature, timestamp, nonce };
+  }
+
   /** Decrypt callback message: verify signature, extract XML. */
   decryptMessage(body: string, msgSignature: string, timestamp: string, nonce: string): string {
     // Extract <Encrypt> from XML body

@@ -2,7 +2,7 @@ import type { ClawdbotConfig, RuntimeEnv, HistoryEntry } from "openclaw/plugin-s
 import * as http from "node:http";
 import type { ResolvedWeComAccount } from "./types.js";
 import { resolveWeComAccount } from "./accounts.js";
-import { handleWeComMessage } from "./bot.js";
+import { handleWeComMessage, handleWeComAiBotMessage } from "./bot.js";
 import { WeComCrypto } from "./crypto.js";
 
 export type MonitorWeComOpts = {
@@ -19,6 +19,26 @@ type AccountHandler = {
   chatHistories: Map<string, HistoryEntry[]>;
 };
 
+// --- AI Bot stream state ---
+type AiBotStreamEntry = {
+  streamId: string;
+  content: string;
+  finished: boolean;
+  createdAt: number;
+};
+
+const aiBotStreams = new Map<string, AiBotStreamEntry>();
+const AIBOT_STREAM_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+function cleanupAiBotStreams() {
+  const now = Date.now();
+  for (const [id, state] of aiBotStreams) {
+    if (now - state.createdAt > AIBOT_STREAM_TTL_MS) {
+      aiBotStreams.delete(id);
+    }
+  }
+}
+
 // key = "port:path" — accounts sharing the same port+path share one HTTP server
 const sharedServers = new Map<
   string,
@@ -29,6 +49,167 @@ const sharedServers = new Map<
     runtime?: RuntimeEnv;
   }
 >();
+
+function handleAiBotPost(params: {
+  encrypted: string;
+  msgSignature: string;
+  timestamp: string;
+  nonce: string;
+  handlers: Map<string, AccountHandler>;
+  cfg: ClawdbotConfig;
+  runtime?: RuntimeEnv;
+  res: http.ServerResponse;
+  log: (...args: unknown[]) => void;
+  error: (...args: unknown[]) => void;
+}) {
+  const { encrypted, msgSignature, timestamp, nonce, handlers, cfg, runtime, res, log, error } =
+    params;
+
+  // Periodic cleanup
+  if (aiBotStreams.size > 50) cleanupAiBotStreams();
+
+  for (const handler of handlers.values()) {
+    if (!handler.crypto.checkSignature(msgSignature, timestamp, nonce, encrypted)) continue;
+
+    // Decrypt
+    let message: string;
+    try {
+      const result = handler.crypto.decrypt(encrypted);
+      const expectedId = handler.account.botId || handler.account.corpId;
+      if (result.corpId !== expectedId) {
+        log(
+          `wecom[${handler.accountId}]: AI bot appId mismatch (expected=${expectedId}, got=${result.corpId}), trying next`,
+        );
+        continue;
+      }
+      message = result.message;
+    } catch (err) {
+      error(`wecom[${handler.accountId}]: AI bot decrypt failed: ${err}`);
+      continue;
+    }
+
+    // Parse decrypted JSON
+    let msg: Record<string, unknown>;
+    try {
+      msg = JSON.parse(message) as Record<string, unknown>;
+    } catch {
+      error(`wecom[${handler.accountId}]: AI bot decrypted content is not valid JSON`);
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("success");
+      return;
+    }
+
+    log(
+      `wecom[${handler.accountId}]: AI bot recv msgtype=${msg.msgtype} from=${(msg.from as Record<string, unknown>)?.userid}`,
+    );
+
+    // --- Streaming refresh event ---
+    if (msg.msgtype === "streaming") {
+      const streamId = (msg.streaming as Record<string, unknown>)?.id as string | undefined;
+      if (!streamId) {
+        res.writeHead(200, { "Content-Type": "text/plain" });
+        res.end("success");
+        return;
+      }
+
+      const state = aiBotStreams.get(streamId);
+      if (!state) {
+        log(`wecom[${handler.accountId}]: AI bot stream ${streamId} not found (expired?)`);
+        res.writeHead(200, { "Content-Type": "text/plain" });
+        res.end("success");
+        return;
+      }
+
+      const replyJson = JSON.stringify({
+        msgtype: "stream",
+        stream: {
+          id: streamId,
+          finish: state.finished,
+          content: state.content || "思考中...",
+        },
+      });
+      const encryptedReply = handler.crypto.encryptReply(replyJson);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(encryptedReply));
+
+      // Delayed cleanup after finished
+      if (state.finished) {
+        setTimeout(() => aiBotStreams.delete(streamId), 30_000);
+      }
+      return;
+    }
+
+    // --- New message: start agent and respond with initial stream ---
+    const streamId = `stream-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const streamState: AiBotStreamEntry = {
+      streamId,
+      content: "",
+      finished: false,
+      createdAt: Date.now(),
+    };
+    aiBotStreams.set(streamId, streamState);
+
+    // Start agent processing asynchronously with timeout protection
+    const AIBOT_AGENT_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
+    const agentTimeout = setTimeout(() => {
+      if (!streamState.finished) {
+        error(
+          `wecom[${handler.accountId}]: AI bot agent timed out after ${AIBOT_AGENT_TIMEOUT_MS / 1000}s`,
+        );
+        streamState.content = streamState.content || "抱歉，AI 处理超时，请稍后再试。";
+        streamState.finished = true;
+      }
+    }, AIBOT_AGENT_TIMEOUT_MS);
+
+    handleWeComAiBotMessage({
+      cfg,
+      msg: msg as HandleWeComAiBotMsg,
+      runtime,
+      chatHistories: handler.chatHistories,
+      accountId: handler.accountId,
+      stream: streamState,
+    })
+      .then(() => {
+        clearTimeout(agentTimeout);
+      })
+      .catch((err) => {
+        clearTimeout(agentTimeout);
+        error(`wecom[${handler.accountId}]: AI bot handle error: ${err}`);
+        streamState.content = streamState.content || "抱歉，AI 处理出现异常，请稍后再试。";
+        streamState.finished = true;
+      });
+
+    // Respond with initial stream
+    const replyJson = JSON.stringify({
+      msgtype: "stream",
+      stream: {
+        id: streamId,
+        finish: false,
+        content: "思考中...",
+      },
+    });
+    const encryptedReply = handler.crypto.encryptReply(replyJson);
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(encryptedReply));
+    return;
+  }
+
+  error("wecom: AI bot POST — no account matched the signature");
+  res.writeHead(200, { "Content-Type": "text/plain" });
+  res.end("success");
+}
+
+// Type alias for the AI bot message shape passed to handleWeComAiBotMessage
+type HandleWeComAiBotMsg = {
+  msgid?: string;
+  aibotid?: string;
+  chatid?: string;
+  chattype?: string;
+  from?: { userid?: string };
+  response_url?: string;
+  msgtype?: string;
+  text?: { content?: string };
+};
 
 function createSharedServer(params: {
   key: string;
@@ -93,6 +274,35 @@ function createSharedServer(params: {
       }
       const body = Buffer.concat(chunks).toString("utf-8");
 
+      // Try AI Bot JSON format: {"encrypt": "..."}
+      let aiBotEncrypted: string | null = null;
+      try {
+        const parsed = JSON.parse(body) as Record<string, unknown>;
+        if (parsed && typeof parsed.encrypt === "string") {
+          aiBotEncrypted = parsed.encrypt;
+        }
+      } catch {
+        // Not JSON — continue with XML path
+      }
+
+      if (aiBotEncrypted) {
+        // AI Bot JSON callback path — response handled inside
+        handleAiBotPost({
+          encrypted: aiBotEncrypted,
+          msgSignature,
+          timestamp,
+          nonce,
+          handlers,
+          cfg,
+          runtime,
+          res,
+          log,
+          error,
+        });
+        return;
+      }
+
+      // === Existing self-built app XML callback path ===
       // Always respond quickly (WeCom requires <5s)
       res.writeHead(200, { "Content-Type": "text/plain" });
       res.end("success");
@@ -167,15 +377,16 @@ export async function monitorWeComProvider(opts: MonitorWeComOpts) {
   // Remove existing handler for this account (hot-reload)
   entry!.handlers.delete(account.accountId);
 
-  // Register handler
+  // Register handler — use botId for AI bot accounts, corpId for self-built apps
+  const appId = account.botId || account.corpId;
   const handler: AccountHandler = {
     accountId: account.accountId,
-    crypto: new WeComCrypto(account.token, account.encodingAesKey, account.corpId),
+    crypto: new WeComCrypto(account.token, account.encodingAesKey, appId),
     account,
     chatHistories: new Map(),
   };
   entry!.handlers.set(account.accountId, handler);
-  log(`wecom[${account.accountId}]: registered on port ${port}`);
+  log(`wecom[${account.accountId}]: registered on port ${port}${account.botId ? " (AI bot)" : ""}`);
 
   // Cleanup on abort — remove handler; close server if no handlers remain
   opts.abortSignal?.addEventListener("abort", () => {

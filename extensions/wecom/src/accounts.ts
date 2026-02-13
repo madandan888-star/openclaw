@@ -37,8 +37,9 @@ export function resolveWeComAccount(params: {
   const secret = acctCfg?.secret ?? "";
   const token = acctCfg?.token ?? "";
   const encodingAesKey = acctCfg?.encodingAesKey ?? "";
+  const botId = acctCfg?.botId ?? "";
   const enabled = acctCfg?.enabled !== false;
-  const configured = !!(corpId && secret && token && encodingAesKey);
+  const configured = !!(token && encodingAesKey && ((corpId && secret) || botId));
 
   return {
     accountId,
@@ -50,6 +51,7 @@ export function resolveWeComAccount(params: {
     secret,
     token,
     encodingAesKey,
+    botId,
     config: acctCfg,
   };
 }

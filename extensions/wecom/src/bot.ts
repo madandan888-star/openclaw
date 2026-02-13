@@ -1,6 +1,10 @@
 import type { ClawdbotConfig, RuntimeEnv, HistoryEntry } from "openclaw/plugin-sdk";
 import { resolveWeComAccount } from "./accounts.js";
-import { createWeComReplyDispatcher } from "./reply-dispatcher.js";
+import {
+  createWeComReplyDispatcher,
+  createWeComAiBotReplyDispatcher,
+  type AiBotStreamState,
+} from "./reply-dispatcher.js";
 import { getWeComRuntime } from "./runtime.js";
 import { getAccessToken, sendWeComGroupText, sendWeComText } from "./send.js";
 
@@ -283,5 +287,143 @@ export async function handleWeComMessage(params: HandleWeComMessageParams) {
         accountId,
       });
     }
+  }
+}
+
+// --- AI Bot (智能机器人) message handler ---
+
+export type HandleWeComAiBotMessageParams = {
+  cfg: ClawdbotConfig;
+  msg: {
+    msgid?: string;
+    aibotid?: string;
+    chatid?: string;
+    chattype?: string;
+    from?: { userid?: string };
+    response_url?: string;
+    msgtype?: string;
+    text?: { content?: string };
+  };
+  runtime?: RuntimeEnv;
+  chatHistories: Map<string, HistoryEntry[]>;
+  accountId?: string;
+  stream: AiBotStreamState;
+};
+
+export async function handleWeComAiBotMessage(params: HandleWeComAiBotMessageParams) {
+  const { cfg, msg, runtime, accountId, stream } = params;
+  const core = getWeComRuntime();
+  const account = resolveWeComAccount({ cfg, accountId });
+  const log = runtime?.log ?? console.log;
+  const error = runtime?.error ?? console.error;
+
+  const fromUser = msg.from?.userid ?? "";
+  const msgId = msg.msgid ?? "";
+  const chatId = msg.chatid ?? "";
+  const chatType = (msg.chattype === "group" ? "group" : "direct") as const;
+  const content = msg.text?.content?.trim() ?? "";
+
+  log(
+    `wecom[${account.accountId}]: AI bot recv from=${fromUser} chatId=${chatId || "-"} msgId=${msgId}`,
+  );
+
+  // Dedup
+  if (msgId && !tryRecordMessage(msgId)) {
+    log(`wecom[${account.accountId}]: AI bot duplicate ${msgId}, skipping`);
+    stream.finished = true;
+    return;
+  }
+
+  if (!content) {
+    log(`wecom[${account.accountId}]: AI bot empty content, skipping`);
+    stream.content = "请发送文本消息。";
+    stream.finished = true;
+    return;
+  }
+
+  const isGroup = chatType === "group";
+  const peerId = isGroup ? chatId : fromUser;
+  const wecomFrom = isGroup ? `wecom:chat:${peerId}` : `wecom:${fromUser}`;
+  const wecomTo = isGroup ? `chat:${peerId}` : `user:${fromUser}`;
+
+  // Resolve agent route
+  const route = core.channel.routing.resolveAgentRoute({
+    cfg,
+    channel: "wecom",
+    accountId: account.accountId,
+    peer: { kind: chatType, id: peerId },
+  });
+
+  // Format envelope
+  const envelopeOptions = core.channel.reply.resolveEnvelopeFormatOptions(cfg);
+  const inboundLabel = isGroup
+    ? `[WeCom AI Bot] chat:${peerId} ${fromUser}`
+    : `[WeCom AI Bot] ${fromUser}`;
+  const preview = content.length > 100 ? content.slice(0, 100) + "…" : content;
+  core.system.enqueueSystemEvent(`${inboundLabel}: ${preview}`, {
+    channel: "wecom",
+    sessionKey: route.sessionKey,
+  });
+
+  const body = core.channel.reply.formatAgentEnvelope({
+    text: content,
+    senderLabel: fromUser,
+    senderTag: fromUser,
+    chatType,
+    options: envelopeOptions,
+  });
+
+  const ctxPayload = core.channel.reply.finalizeInboundContext({
+    Body: body,
+    BodyForAgent: content,
+    RawBody: content,
+    CommandBody: content,
+    From: wecomFrom,
+    To: wecomTo,
+    SessionKey: route.sessionKey,
+    AccountId: route.accountId,
+    ChatType: chatType,
+    SenderName: fromUser,
+    SenderId: fromUser,
+    Provider: "wecom" as const,
+    Surface: "wecom" as const,
+    MessageSid: msgId || `wecom-aibot-${Date.now()}`,
+    Timestamp: Date.now(),
+    WasMentioned: true,
+    CommandAuthorized: true,
+    OriginatingChannel: "wecom" as const,
+    OriginatingTo: wecomTo,
+  });
+
+  // Create AI bot reply dispatcher (stream-based)
+  const { dispatcher, replyOptions, flushReasoning } = createWeComAiBotReplyDispatcher({
+    cfg,
+    agentId: route.agentId,
+    runtime: runtime as RuntimeEnv,
+    accountId: account.accountId,
+    stream,
+  });
+
+  log(`wecom[${account.accountId}]: AI bot dispatching (session=${route.sessionKey})`);
+
+  try {
+    const { counts } = await core.channel.reply.dispatchReplyFromConfig({
+      ctx: ctxPayload,
+      cfg,
+      dispatcher,
+      replyOptions,
+    });
+
+    await flushReasoning();
+    if (!stream.content) {
+      stream.content = "（AI 未生成回复）";
+    }
+    stream.finished = true;
+
+    log(`wecom[${account.accountId}]: AI bot dispatch complete (replies=${counts.final})`);
+  } catch (err) {
+    error(`wecom[${account.accountId}]: AI bot dispatch failed: ${String(err)}`);
+    stream.content = stream.content || "抱歉，AI 处理出现异常，请稍后再试。";
+    stream.finished = true;
   }
 }

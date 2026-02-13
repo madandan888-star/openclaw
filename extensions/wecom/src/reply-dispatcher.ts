@@ -8,6 +8,20 @@ import { resolveWeComAccount } from "./accounts.js";
 import { getWeComRuntime } from "./runtime.js";
 import { sendWeComGroupText, sendWeComImage, sendWeComText } from "./send.js";
 
+export type AiBotStreamState = {
+  streamId: string;
+  content: string;
+  finished: boolean;
+};
+
+export type CreateWeComAiBotReplyDispatcherParams = {
+  cfg: ClawdbotConfig;
+  agentId: string;
+  runtime: RuntimeEnv;
+  accountId?: string;
+  stream: AiBotStreamState;
+};
+
 export type CreateWeComReplyDispatcherParams = {
   cfg: ClawdbotConfig;
   agentId: string;
@@ -151,5 +165,67 @@ export function createWeComReplyDispatcher(params: CreateWeComReplyDispatcherPar
     },
     markDispatchIdle,
     flushReasoning: flushReasoningInternal,
+  };
+}
+
+/**
+ * AI Bot reply dispatcher: writes text and reasoning to a shared stream state
+ * object that the HTTP handler reads from to serve streaming responses.
+ */
+export function createWeComAiBotReplyDispatcher(params: CreateWeComAiBotReplyDispatcherParams) {
+  const core = getWeComRuntime();
+  const { cfg, agentId, accountId, stream } = params;
+  const account = resolveWeComAccount({ cfg, accountId });
+  const prefixContext = createReplyPrefixContext({ cfg, agentId });
+
+  let thinkingContent = "";
+  let replyContent = "";
+
+  function updateStreamContent() {
+    const parts: string[] = [];
+    if (thinkingContent) parts.push(`<think>${thinkingContent}</think>`);
+    if (replyContent) parts.push(replyContent);
+    stream.content = parts.join("\n\n") || "";
+  }
+
+  const { dispatcher, replyOptions, markDispatchIdle } =
+    core.channel.reply.createReplyDispatcherWithTyping({
+      responsePrefix: prefixContext.responsePrefix,
+      responsePrefixContextProvider: prefixContext.responsePrefixContextProvider,
+      humanDelay: core.channel.reply.resolveHumanDelayConfig(cfg, agentId),
+      deliver: async (payload: ReplyPayload) => {
+        const text = payload.text ?? "";
+        if (text.trim()) {
+          replyContent = replyContent ? `${replyContent}\n\n${text}` : text;
+          updateStreamContent();
+        }
+      },
+      onError: (err: unknown, info: { kind: string }) => {
+        params.runtime.error?.(
+          `wecom[${account.accountId}] AI bot ${info.kind} reply failed: ${String(err)}`,
+        );
+      },
+    });
+
+  const onReasoningStream = async (payload: ReplyPayload) => {
+    const raw = payload.text ?? "";
+    if (!raw) return;
+    const plain = stripReasoningFormat(raw);
+    if (!plain) return;
+    thinkingContent = plain;
+    updateStreamContent();
+  };
+
+  return {
+    dispatcher,
+    replyOptions: {
+      ...replyOptions,
+      onModelSelected: prefixContext.onModelSelected,
+      onReasoningStream,
+    },
+    markDispatchIdle,
+    flushReasoning: async () => {
+      // Reasoning is already in the stream content via updateStreamContent
+    },
   };
 }

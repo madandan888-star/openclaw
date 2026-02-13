@@ -361,10 +361,27 @@ export async function runAgentTurnWithFallback(params: {
             // via opts.onBlockReply when the pipeline isn't available.
             onBlockReply: params.opts?.onBlockReply
               ? async (payload) => {
-                  const { text, skip } = normalizeStreamingText(payload);
+                  // Block replies are complete text segments emitted at text_end boundaries,
+                  // not character-level partial streams. They should always be delivered
+                  // even when allowPartialStream is false (reasoning streaming active),
+                  // to preserve message ordering before tool calls.
+                  let text = payload.text;
                   const hasPayloadMedia = (payload.mediaUrls?.length ?? 0) > 0;
-                  if (skip && !hasPayloadMedia) {
+                  if (!text && !hasPayloadMedia) {
                     return;
+                  }
+                  if (text) {
+                    if (isSilentReplyText(text, SILENT_REPLY_TOKEN)) {
+                      if (!hasPayloadMedia) {
+                        return;
+                      }
+                      text = undefined;
+                    } else {
+                      text = sanitizeUserFacingText(text, { errorContext: false });
+                      if (!text.trim() && !hasPayloadMedia) {
+                        return;
+                      }
+                    }
                   }
                   const currentMessageId =
                     params.sessionCtx.MessageSidFull ?? params.sessionCtx.MessageSid;
@@ -443,7 +460,6 @@ export async function runAgentTurnWithFallback(params: {
                   // `subscribeEmbeddedPiSession` may invoke tool callbacks without awaiting them.
                   // If a tool callback starts typing after the run finalized, we can end up with
                   // a typing loop that never sees a matching markRunComplete(). Track and drain.
-                  logVerbose(`onToolResult callback invoked: text=${payload.text?.slice(0, 80)}`);
                   const task = (async () => {
                     // Tool summaries are discrete status updates (e.g. "🔧 Exec: ls"),
                     // not streaming text fragments. Bypass the allowPartialStream gate
@@ -460,6 +476,11 @@ export async function runAgentTurnWithFallback(params: {
                     });
                     if (!text.trim()) {
                       return;
+                    }
+                    // Flush any pending block replies first so text before the tool
+                    // call is delivered before this tool summary.
+                    if (params.blockStreamingEnabled && blockReplyPipeline) {
+                      await blockReplyPipeline.flush({ force: true });
                     }
                     await params.typingSignals.signalTextDelta(text);
                     await onToolResult({
