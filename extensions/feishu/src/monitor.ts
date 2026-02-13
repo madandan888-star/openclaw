@@ -5,6 +5,11 @@ import type { ResolvedFeishuAccount } from "./types.js";
 import { resolveFeishuAccount, listEnabledFeishuAccounts } from "./accounts.js";
 import { handleFeishuMessage, type FeishuMessageEvent, type FeishuBotAddedEvent } from "./bot.js";
 import { createFeishuWSClient, createEventDispatcher } from "./client.js";
+import {
+  registerFeishuAccountHistory,
+  unregisterFeishuAccountHistory,
+  getRegisteredFeishuAccountIds,
+} from "./cross-bot-broadcast.js";
 import { probeFeishu } from "./probe.js";
 
 export type MonitorFeishuOpts = {
@@ -116,6 +121,15 @@ async function monitorSingleAccount(params: MonitorAccountParams): Promise<void>
   const eventDispatcher = createEventDispatcher(account);
   const chatHistories = new Map<string, HistoryEntry[]>();
 
+  // Register this account's group history map so outbound bot messages can be broadcast
+  // into other accounts' session histories (Feishu does not deliver bot->bot messages).
+  registerFeishuAccountHistory({
+    accountId,
+    chatHistories,
+    botOpenId: botOpenId ?? "",
+    botName: account.name ?? accountId,
+  });
+
   registerEventHandlers(eventDispatcher, {
     cfg,
     accountId,
@@ -155,6 +169,7 @@ async function monitorWebSocket({
     const cleanup = () => {
       wsClients.delete(accountId);
       botOpenIds.delete(accountId);
+      unregisterFeishuAccountHistory(accountId);
     };
 
     const handleAbort = () => {
@@ -205,6 +220,7 @@ async function monitorWebhook({
       server.close();
       httpServers.delete(accountId);
       botOpenIds.delete(accountId);
+      unregisterFeishuAccountHistory(accountId);
     };
 
     const handleAbort = () => {
@@ -293,6 +309,7 @@ export function stopFeishuMonitor(accountId?: string): void {
       httpServers.delete(accountId);
     }
     botOpenIds.delete(accountId);
+    unregisterFeishuAccountHistory(accountId);
   } else {
     wsClients.clear();
     for (const server of httpServers.values()) {
@@ -300,5 +317,10 @@ export function stopFeishuMonitor(accountId?: string): void {
     }
     httpServers.clear();
     botOpenIds.clear();
+
+    // Clear all registered histories (best-effort)
+    for (const id of getRegisteredFeishuAccountIds()) {
+      unregisterFeishuAccountHistory(id);
+    }
   }
 }

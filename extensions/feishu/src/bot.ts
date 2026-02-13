@@ -878,6 +878,7 @@ export async function handleFeishuMessage(params: {
         agentId: route.agentId,
         runtime: runtime as RuntimeEnv,
         chatId: ctx.chatId,
+        chatType: ctx.chatType,
         replyToMessageId: ctx.messageId,
         accountId: account.accountId,
       });
@@ -963,6 +964,7 @@ export async function handleFeishuMessage(params: {
       agentId: route.agentId,
       runtime: runtime as RuntimeEnv,
       chatId: ctx.chatId,
+      chatType: ctx.chatType,
       replyToMessageId: ctx.messageId,
       mentionTargets: ctx.mentionTargets,
       accountId: account.accountId,

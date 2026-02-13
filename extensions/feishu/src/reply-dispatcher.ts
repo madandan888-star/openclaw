@@ -8,6 +8,7 @@ import {
 } from "openclaw/plugin-sdk";
 import type { MentionTarget } from "./mention.js";
 import { resolveFeishuAccount } from "./accounts.js";
+import { broadcastFeishuBotMessageToOtherAccounts } from "./cross-bot-broadcast.js";
 import { getFeishuRuntime } from "./runtime.js";
 import { sendMessageFeishu, sendMarkdownCardFeishu } from "./send.js";
 import { addTypingIndicator, removeTypingIndicator, type TypingIndicatorState } from "./typing.js";
@@ -33,6 +34,7 @@ export type CreateFeishuReplyDispatcherParams = {
   agentId: string;
   runtime: RuntimeEnv;
   chatId: string;
+  chatType: "p2p" | "group";
   replyToMessageId?: string;
   /** Mention targets, will be auto-included in replies */
   mentionTargets?: MentionTarget[];
@@ -42,7 +44,7 @@ export type CreateFeishuReplyDispatcherParams = {
 
 export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherParams) {
   const core = getFeishuRuntime();
-  const { cfg, agentId, chatId, replyToMessageId, mentionTargets, accountId } = params;
+  const { cfg, agentId, chatId, chatType, replyToMessageId, mentionTargets, accountId } = params;
 
   // Resolve account for config access
   const account = resolveFeishuAccount({ cfg, accountId });
@@ -129,14 +131,32 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
             `feishu[${account.accountId}] deliver: sending ${chunks.length} card chunks to ${chatId}`,
           );
           for (const chunk of chunks) {
-            await sendMarkdownCardFeishu({
+            const mentionList = isFirstChunk ? mentionTargets : undefined;
+            const historyText = mentionList?.length
+              ? `${mentionList.map((m) => `@${m.name}`).join(" ")} ${chunk}`.trim()
+              : chunk;
+
+            const sent = await sendMarkdownCardFeishu({
               cfg,
               to: chatId,
               text: chunk,
               replyToMessageId,
-              mentions: isFirstChunk ? mentionTargets : undefined,
+              mentions: mentionList,
               accountId,
             });
+
+            if (chatType === "group") {
+              broadcastFeishuBotMessageToOtherAccounts({
+                cfg,
+                chatId,
+                senderAccountId: account.accountId,
+                senderBotName: account.name ?? account.accountId,
+                text: historyText,
+                messageId: sent.messageId,
+                log: (msg) => params.runtime.log?.(msg),
+              });
+            }
+
             isFirstChunk = false;
           }
         } else {
@@ -147,14 +167,32 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
             `feishu[${account.accountId}] deliver: sending ${chunks.length} text chunks to ${chatId}`,
           );
           for (const chunk of chunks) {
-            await sendMessageFeishu({
+            const mentionList = isFirstChunk ? mentionTargets : undefined;
+            const historyText = mentionList?.length
+              ? `${mentionList.map((m) => `@${m.name}`).join(" ")} ${chunk}`.trim()
+              : chunk;
+
+            const sent = await sendMessageFeishu({
               cfg,
               to: chatId,
               text: chunk,
               replyToMessageId,
-              mentions: isFirstChunk ? mentionTargets : undefined,
+              mentions: mentionList,
               accountId,
             });
+
+            if (chatType === "group") {
+              broadcastFeishuBotMessageToOtherAccounts({
+                cfg,
+                chatId,
+                senderAccountId: account.accountId,
+                senderBotName: account.name ?? account.accountId,
+                text: historyText,
+                messageId: sent.messageId,
+                log: (msg) => params.runtime.log?.(msg),
+              });
+            }
+
             isFirstChunk = false;
           }
         }
