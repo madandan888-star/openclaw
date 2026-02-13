@@ -2,7 +2,7 @@ import type { ClawdbotConfig, RuntimeEnv, HistoryEntry } from "openclaw/plugin-s
 import { resolveWeComAccount } from "./accounts.js";
 import { createWeComReplyDispatcher } from "./reply-dispatcher.js";
 import { getWeComRuntime } from "./runtime.js";
-import { sendWeComText } from "./send.js";
+import { getAccessToken, sendWeComGroupText, sendWeComText } from "./send.js";
 
 // --- Deduplication ---
 const DEDUP_TTL_MS = 30 * 60 * 1000;
@@ -55,8 +55,11 @@ export async function handleWeComMessage(params: HandleWeComMessageParams) {
   const picUrl = extractXmlField(xml, "PicUrl");
   const msgId = extractXmlField(xml, "MsgId");
   const createTime = extractXmlField(xml, "CreateTime");
+  const chatId = extractXmlField(xml, "ChatId");
 
-  log(`wecom[${account.accountId}]: recv type=${msgType} from=${fromUser} msgId=${msgId}`);
+  log(
+    `wecom[${account.accountId}]: recv type=${msgType} from=${fromUser} chatId=${chatId || "-"} msgId=${msgId}`,
+  );
 
   // Dedup
   if (msgId && !tryRecordMessage(msgId)) {
@@ -77,6 +80,59 @@ export async function handleWeComMessage(params: HandleWeComMessageParams) {
     }
     effectiveContent = effectiveContent || "[用户发送了一张图片]";
     if (picUrl) effectiveContent += `\n${picUrl}`;
+  } else if (msgType === "voice") {
+    // Download voice media and transcribe via Qwen3-ASR
+    const mediaId = extractXmlField(xml, "MediaId");
+    log(`wecom[${account.accountId}]: voice mediaId=${mediaId}`);
+    if (mediaId) {
+      try {
+        const token = await getAccessToken({ cfg, accountId });
+        const mediaUrl = `https://bot.youfuli.cn/wecom-api/cgi-bin/media/get?access_token=${token}&media_id=${mediaId}`;
+        const mediaResp = await fetch(mediaUrl);
+        if (!mediaResp.ok) throw new Error(`media download failed: ${mediaResp.status}`);
+        const amrBuf = Buffer.from(await mediaResp.arrayBuffer());
+
+        // Convert AMR to WAV using ffmpeg
+        const { execSync } = await import("child_process");
+        const tmpAmr = `/tmp/wecom_voice_${msgId}.amr`;
+        const tmpWav = `/tmp/wecom_voice_${msgId}.wav`;
+        const fs = await import("fs");
+        fs.writeFileSync(tmpAmr, amrBuf);
+        execSync(`ffmpeg -y -i ${tmpAmr} -ar 16000 -ac 1 ${tmpWav} 2>/dev/null`);
+
+        // Send to Qwen3-ASR API
+        const wavBuf = fs.readFileSync(tmpWav);
+        const formData = new FormData();
+        formData.append("file", new Blob([wavBuf], { type: "audio/wav" }), "audio.wav");
+        const asrResp = await fetch("http://127.0.0.1:9882/transcribe", {
+          method: "POST",
+          body: formData,
+        });
+        const asrResult = (await asrResp.json()) as { text?: string };
+        effectiveContent = (asrResult.text || "").trim();
+        log(`wecom[${account.accountId}]: ASR result: ${effectiveContent}`);
+
+        // Cleanup
+        try {
+          fs.unlinkSync(tmpAmr);
+          fs.unlinkSync(tmpWav);
+        } catch {}
+
+        if (!effectiveContent) {
+          await sendWeComText({ cfg, to: fromUser, text: "语音识别结果为空，请重试。", accountId });
+          return;
+        }
+      } catch (e: any) {
+        log(`wecom[${account.accountId}]: voice ASR error: ${e.message}`);
+        await sendWeComText({
+          cfg,
+          to: fromUser,
+          text: "语音识别失败，请发送文字消息。",
+          accountId,
+        });
+        return;
+      }
+    }
   } else if (msgType !== "text" || !effectiveContent) {
     if (fromUser) {
       await sendWeComText({
@@ -89,20 +145,42 @@ export async function handleWeComMessage(params: HandleWeComMessageParams) {
     return;
   }
 
-  // Build context (WeCom self-built apps are always DM-like, agentId-scoped)
-  const chatType = "direct" as const;
-  const wecomFrom = `wecom:${fromUser}`;
-  const wecomTo = `user:${fromUser}`;
+  const isGroup = msgType === "text" && !!chatId.trim();
+  const chatType = (isGroup ? "group" : "direct") as const;
+  const peerId = isGroup ? chatId.trim() : fromUser;
 
-  // Resolve agent route
+  const wecomFrom = isGroup ? `wecom:chat:${peerId}` : `wecom:${fromUser}`;
+  // NOTE: `To` is used as the outbound target. We keep it provider-specific:
+  // - direct: user:<userid>
+  // - group:  chat:<chatid>
+  const wecomTo = isGroup ? `chat:${peerId}` : `user:${fromUser}`;
+
+  // Resolve agent route (group messages are routed by chatId)
   const route = core.channel.routing.resolveAgentRoute({
     cfg,
     channel: "wecom",
     peer: {
       kind: chatType,
-      id: fromUser,
+      id: peerId,
     },
   });
+
+  // Group mention gate: only respond when @-mentioned
+  let wasMentioned = true;
+  if (isGroup) {
+    const mentionRegexes = core.channel.mentions.buildMentionRegexes(cfg as any, route.agentId);
+    const byPattern = core.channel.mentions.matchesMentionPatterns(
+      effectiveContent,
+      mentionRegexes,
+    );
+    const fallback = mentionRegexes.length === 0 ? /^\s*@/.test(effectiveContent) : false;
+    wasMentioned = byPattern || fallback;
+
+    if (!wasMentioned) {
+      log(`wecom[${account.accountId}]: drop group chat ${peerId} (not mentioned)`);
+      return;
+    }
+  }
 
   // Format envelope
   const envelopeOptions = core.channel.reply.resolveEnvelopeFormatOptions(cfg);
@@ -111,7 +189,7 @@ export async function handleWeComMessage(params: HandleWeComMessageParams) {
     mediaUrls.length > 0 ? `${effectiveContent}\n${mediaUrls.join("\n")}` : effectiveContent;
 
   // System event for logging
-  const inboundLabel = `[WeCom] ${fromUser}`;
+  const inboundLabel = isGroup ? `[WeCom] chat:${peerId} ${fromUser}` : `[WeCom] ${fromUser}`;
   const preview = agentText.length > 100 ? agentText.slice(0, 100) + "…" : agentText;
   core.system.enqueueSystemEvent(`${inboundLabel}: ${preview}`, {
     channel: "wecom",
@@ -141,7 +219,7 @@ export async function handleWeComMessage(params: HandleWeComMessageParams) {
     Surface: "wecom" as const,
     MessageSid: msgId || `wecom-${Date.now()}`,
     Timestamp: Number(createTime) * 1000 || Date.now(),
-    WasMentioned: true,
+    WasMentioned: isGroup ? wasMentioned : true,
     CommandAuthorized: true,
     OriginatingChannel: "wecom" as const,
     OriginatingTo: wecomTo,
@@ -152,7 +230,7 @@ export async function handleWeComMessage(params: HandleWeComMessageParams) {
     cfg,
     agentId: route.agentId,
     runtime: runtime as RuntimeEnv,
-    toUser: fromUser,
+    toUser: isGroup ? `chat:${peerId}` : fromUser,
     accountId: account.accountId,
   });
 
@@ -174,11 +252,20 @@ export async function handleWeComMessage(params: HandleWeComMessageParams) {
   } catch (err) {
     error(`wecom[${account.accountId}]: failed to dispatch: ${String(err)}`);
     // Fallback error reply
-    await sendWeComText({
-      cfg,
-      to: fromUser,
-      text: "抱歉，AI 处理出现异常，请稍后再试。",
-      accountId,
-    });
+    if (isGroup) {
+      await sendWeComGroupText({
+        cfg,
+        chatId: peerId,
+        text: "抱歉，AI 处理出现异常，请稍后再试。",
+        accountId,
+      });
+    } else {
+      await sendWeComText({
+        cfg,
+        to: fromUser,
+        text: "抱歉，AI 处理出现异常，请稍后再试。",
+        accountId,
+      });
+    }
   }
 }

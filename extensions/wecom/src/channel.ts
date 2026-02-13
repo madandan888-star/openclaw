@@ -32,7 +32,7 @@ export const wecomPlugin: ChannelPlugin<ResolvedWeComAccount> = {
     },
   },
   capabilities: {
-    chatTypes: ["direct"],
+    chatTypes: ["direct", "group"],
     polls: false,
     threads: false,
     media: false, // TODO: add media support later

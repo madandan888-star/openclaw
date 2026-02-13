@@ -83,6 +83,45 @@ export async function sendWeComText(params: {
   return false;
 }
 
+export async function sendWeComGroupText(params: {
+  cfg: ClawdbotConfig;
+  chatId: string;
+  text: string;
+  accountId?: string;
+}): Promise<boolean> {
+  const content = params.text.slice(0, 2048);
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const account = resolveWeComAccount({ cfg: params.cfg, accountId: params.accountId });
+      const token = await getAccessToken({ cfg: params.cfg, accountId: params.accountId });
+      const url = `https://bot.youfuli.cn/wecom-api/cgi-bin/appchat/send?access_token=${token}`;
+      const body = {
+        chatid: params.chatId,
+        msgtype: "text",
+        text: { content },
+      };
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(15_000),
+      });
+      const j = (await res.json()) as { errcode: number; errmsg: string };
+      if (j.errcode === 0) return true;
+
+      if (j.errcode === 40014 || j.errcode === 42001) {
+        tokenCache.delete(account.accountId);
+      }
+    } catch {
+      // retry
+    }
+    await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+  }
+
+  return false;
+}
+
 function guessImageMimeType(fileName: string, contentType?: string | null): string | undefined {
   const ct = contentType?.split(";")[0]?.trim();
   if (ct && ct.startsWith("image/")) return ct;
