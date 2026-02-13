@@ -495,7 +495,11 @@ export function parseFeishuMessageEvent(
   const ctx: FeishuMessageContext = {
     chatId: event.message.chat_id,
     messageId: event.message.message_id,
-    senderId: event.sender.sender_id.user_id || event.sender.sender_id.open_id || "",
+    senderId:
+      event.sender.sender_id.union_id ||
+      event.sender.sender_id.user_id ||
+      event.sender.sender_id.open_id ||
+      "",
     senderOpenId: event.sender.sender_id.open_id || "",
     chatType: event.message.chat_type,
     mentionedBot,
@@ -896,7 +900,7 @@ export async function handleFeishuMessage(params: {
       ChatType: isGroup ? "group" : "direct",
       GroupSubject: isGroup ? ctx.chatId : undefined,
       SenderName: ctx.senderName ?? ctx.senderOpenId,
-      SenderId: ctx.senderOpenId,
+      SenderId: ctx.senderId,
       Provider: "feishu" as const,
       Surface: "feishu" as const,
       MessageSid: ctx.messageId,

@@ -2,6 +2,7 @@ import type { FeishuIdType } from "./types.js";
 
 const CHAT_ID_PREFIX = "oc_";
 const OPEN_ID_PREFIX = "ou_";
+const UNION_ID_PREFIX = "on_";
 const USER_ID_REGEX = /^[a-zA-Z0-9_-]+$/;
 
 export function detectIdType(id: string): FeishuIdType | null {
@@ -11,6 +12,9 @@ export function detectIdType(id: string): FeishuIdType | null {
   }
   if (trimmed.startsWith(OPEN_ID_PREFIX)) {
     return "open_id";
+  }
+  if (trimmed.startsWith(UNION_ID_PREFIX)) {
+    return "union_id";
   }
   if (USER_ID_REGEX.test(trimmed)) {
     return "user_id";
@@ -34,6 +38,9 @@ export function normalizeFeishuTarget(raw: string): string | null {
   if (lowered.startsWith("open_id:")) {
     return trimmed.slice("open_id:".length).trim() || null;
   }
+  if (lowered.startsWith("union_id:")) {
+    return trimmed.slice("union_id:".length).trim() || null;
+  }
 
   return trimmed;
 }
@@ -43,19 +50,27 @@ export function formatFeishuTarget(id: string, type?: FeishuIdType): string {
   if (type === "chat_id" || trimmed.startsWith(CHAT_ID_PREFIX)) {
     return `chat:${trimmed}`;
   }
-  if (type === "open_id" || trimmed.startsWith(OPEN_ID_PREFIX)) {
+  if (
+    type === "open_id" ||
+    type === "union_id" ||
+    trimmed.startsWith(OPEN_ID_PREFIX) ||
+    trimmed.startsWith(UNION_ID_PREFIX)
+  ) {
     return `user:${trimmed}`;
   }
   return trimmed;
 }
 
-export function resolveReceiveIdType(id: string): "chat_id" | "open_id" | "user_id" {
+export function resolveReceiveIdType(id: string): "chat_id" | "open_id" | "user_id" | "union_id" {
   const trimmed = id.trim();
   if (trimmed.startsWith(CHAT_ID_PREFIX)) {
     return "chat_id";
   }
   if (trimmed.startsWith(OPEN_ID_PREFIX)) {
     return "open_id";
+  }
+  if (trimmed.startsWith(UNION_ID_PREFIX)) {
+    return "union_id";
   }
   return "open_id";
 }
@@ -65,13 +80,16 @@ export function looksLikeFeishuId(raw: string): boolean {
   if (!trimmed) {
     return false;
   }
-  if (/^(chat|user|open_id):/i.test(trimmed)) {
+  if (/^(chat|user|open_id|union_id):/i.test(trimmed)) {
     return true;
   }
   if (trimmed.startsWith(CHAT_ID_PREFIX)) {
     return true;
   }
   if (trimmed.startsWith(OPEN_ID_PREFIX)) {
+    return true;
+  }
+  if (trimmed.startsWith(UNION_ID_PREFIX)) {
     return true;
   }
   return false;
