@@ -1,7 +1,7 @@
 import type { ChannelOutboundAdapter } from "openclaw/plugin-sdk";
 import { sendMediaFeishu } from "./media.js";
 import { getFeishuRuntime } from "./runtime.js";
-import { sendMessageFeishu } from "./send.js";
+import { sendFeishuVoice, sendMessageFeishu } from "./send.js";
 
 export const feishuOutbound: ChannelOutboundAdapter = {
   deliveryMode: "direct",
@@ -20,11 +20,52 @@ export const feishuOutbound: ChannelOutboundAdapter = {
 
     // Upload and send media if URL provided
     if (mediaUrl) {
+      const url = mediaUrl.trim();
+      const isAudio = /\.(mp3|wav|amr|ogg|m4a|opus)(\?.*)?$/i.test(url);
+
+      if (url && isAudio) {
+        try {
+          const result = await sendFeishuVoice({
+            cfg,
+            chatId: to,
+            audioPath: url,
+            accountId: accountId ?? undefined,
+          });
+          return {
+            channel: "feishu",
+            messageId: result.messageId ?? "unknown",
+            chatId: result.chatId ?? to,
+          };
+        } catch (err) {
+          console.error(`[feishu] sendFeishuVoice failed:`, err);
+          // Fallback to sending as a regular file
+          try {
+            const result = await sendMediaFeishu({
+              cfg,
+              to,
+              mediaUrl: url,
+              accountId: accountId ?? undefined,
+            });
+            return { channel: "feishu", ...result };
+          } catch (fallbackErr) {
+            console.error(`[feishu] sendMediaFeishu fallback failed:`, fallbackErr);
+            const fallbackText = `📎 ${url}`;
+            const result = await sendMessageFeishu({
+              cfg,
+              to,
+              text: fallbackText,
+              accountId: accountId ?? undefined,
+            });
+            return { channel: "feishu", ...result };
+          }
+        }
+      }
+
       try {
         const result = await sendMediaFeishu({
           cfg,
           to,
-          mediaUrl,
+          mediaUrl: url,
           accountId: accountId ?? undefined,
         });
         return { channel: "feishu", ...result };
@@ -32,7 +73,7 @@ export const feishuOutbound: ChannelOutboundAdapter = {
         // Log the error for debugging
         console.error(`[feishu] sendMediaFeishu failed:`, err);
         // Fallback to URL link if upload fails
-        const fallbackText = `📎 ${mediaUrl}`;
+        const fallbackText = `📎 ${url}`;
         const result = await sendMessageFeishu({
           cfg,
           to,

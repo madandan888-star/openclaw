@@ -1,8 +1,14 @@
 import type { ClawdbotConfig } from "openclaw/plugin-sdk";
+import { spawnSync } from "child_process";
+import fs from "fs";
+import { randomUUID } from "node:crypto";
+import os from "os";
+import path from "path";
 import type { MentionTarget } from "./mention.js";
 import type { FeishuSendResult, ResolvedFeishuAccount } from "./types.js";
 import { resolveFeishuAccount } from "./accounts.js";
 import { createFeishuClient } from "./client.js";
+import { uploadFileFeishu } from "./media.js";
 import { buildMentionedMessage, buildMentionedCardContent } from "./mention.js";
 import { getFeishuRuntime } from "./runtime.js";
 import { resolveReceiveIdType, normalizeFeishuTarget } from "./targets.js";
@@ -358,5 +364,177 @@ export async function editMessageFeishu(params: {
 
   if (response.code !== 0) {
     throw new Error(`Feishu message edit failed: ${response.msg || `code ${response.code}`}`);
+  }
+}
+
+export async function sendFeishuVoice(params: {
+  cfg: ClawdbotConfig;
+  chatId: string;
+  // Local file path or URL
+  audioPath: string;
+  accountId?: string;
+}): Promise<{ messageId?: string; chatId?: string }> {
+  const { cfg, chatId, audioPath, accountId } = params;
+  const account = resolveFeishuAccount({ cfg, accountId });
+  if (!account.configured) {
+    throw new Error(`Feishu account "${account.accountId}" not configured`);
+  }
+
+  const client = createFeishuClient(account);
+  const receiveId = normalizeFeishuTarget(chatId);
+  if (!receiveId) {
+    throw new Error(`Invalid Feishu target: ${chatId}`);
+  }
+  const receiveIdType = resolveReceiveIdType(receiveId);
+
+  const cleanupPaths: string[] = [];
+
+  const resolveSourcePath = async (): Promise<string> => {
+    const trimmed = audioPath.trim();
+    if (!trimmed) {
+      throw new Error("audioPath is required");
+    }
+
+    // Accept "MEDIA: /path" inputs (defensive).
+    const mediaPrefix = /^MEDIA:\s*/i;
+    const normalized = trimmed.replace(mediaPrefix, "").trim();
+
+    if (/^https?:\/\//i.test(normalized)) {
+      const res = await fetch(normalized, { signal: AbortSignal.timeout(30_000) });
+      if (!res.ok) {
+        throw new Error(`Failed to download audio: ${res.status} ${res.statusText}`);
+      }
+      const buf = Buffer.from(await res.arrayBuffer());
+      const url = new URL(normalized);
+      const ext = path.extname(url.pathname) || ".wav";
+      const tmpPath = path.join(
+        os.tmpdir(),
+        `feishu_voice_src_${Date.now()}_${randomUUID()}${ext}`,
+      );
+      fs.writeFileSync(tmpPath, buf);
+      cleanupPaths.push(tmpPath);
+      return tmpPath;
+    }
+
+    // Local path
+    const filePath = normalized.startsWith("~")
+      ? normalized.replace("~", process.env.HOME ?? "")
+      : normalized.replace("file://", "");
+
+    if (!fs.existsSync(filePath)) {
+      throw new Error(`Audio file not found: ${filePath}`);
+    }
+    return filePath;
+  };
+
+  const getDurationMs = (filePath: string): number | undefined => {
+    try {
+      const probe = spawnSync(
+        "ffprobe",
+        [
+          "-v",
+          "error",
+          "-show_entries",
+          "format=duration",
+          "-of",
+          "default=noprint_wrappers=1:nokey=1",
+          filePath,
+        ],
+        { encoding: "utf8" },
+      );
+      if (probe.status !== 0) {
+        return undefined;
+      }
+      const seconds = Number.parseFloat(String(probe.stdout ?? "").trim());
+      if (!Number.isFinite(seconds) || seconds <= 0) {
+        return undefined;
+      }
+      return Math.max(1, Math.round(seconds * 1000));
+    } catch {
+      return undefined;
+    }
+  };
+
+  let sourcePath: string | undefined;
+  let opusPath: string | undefined;
+
+  try {
+    sourcePath = await resolveSourcePath();
+
+    const lower = sourcePath.toLowerCase();
+    const alreadyOpus = lower.endsWith(".opus");
+    if (alreadyOpus) {
+      opusPath = sourcePath;
+    } else {
+      opusPath = path.join(os.tmpdir(), `feishu_voice_${Date.now()}_${randomUUID()}.opus`);
+      cleanupPaths.push(opusPath);
+      const ffmpeg = spawnSync(
+        "ffmpeg",
+        [
+          "-y",
+          "-i",
+          sourcePath,
+          "-c:a",
+          "libopus",
+          "-b:a",
+          "32k",
+          "-ar",
+          "16000",
+          "-ac",
+          "1",
+          opusPath,
+        ],
+        { encoding: "utf8" },
+      );
+      if (ffmpeg.status !== 0) {
+        throw new Error(
+          `ffmpeg opus conversion failed: ${String(ffmpeg.stderr || ffmpeg.stdout || "").trim()}`,
+        );
+      }
+      if (!fs.existsSync(opusPath)) {
+        throw new Error(`ffmpeg opus conversion failed: output not found (${opusPath})`);
+      }
+    }
+
+    if (!opusPath) {
+      throw new Error("Feishu voice send failed: opus output missing");
+    }
+
+    const duration = getDurationMs(opusPath);
+    const { fileKey } = await uploadFileFeishu({
+      cfg,
+      file: opusPath,
+      fileName: "voice.opus",
+      fileType: "opus",
+      duration,
+      accountId,
+    });
+
+    const response = await client.im.message.create({
+      params: { receive_id_type: receiveIdType },
+      data: {
+        receive_id: receiveId,
+        msg_type: "audio",
+        content: JSON.stringify({ file_key: fileKey }),
+      },
+    });
+
+    if (response.code !== 0) {
+      throw new Error(`Feishu voice send failed: ${response.msg || `code ${response.code}`}`);
+    }
+
+    return {
+      messageId: response.data?.message_id ?? "unknown",
+      chatId: receiveId,
+    };
+  } finally {
+    // Only cleanup temporary files we created.
+    for (const p of cleanupPaths) {
+      try {
+        await fs.promises.unlink(p);
+      } catch {
+        // ignore
+      }
+    }
   }
 }
