@@ -530,6 +530,10 @@ export async function handleFeishuMessage(params: {
   runtime?: RuntimeEnv;
   chatHistories?: Map<string, HistoryEntry[]>;
   accountId?: string;
+  /** @internal Marks this as a cross-bot dispatch to prevent infinite loops. */
+  _fromCrossBotDispatch?: boolean;
+  /** @internal Override sender display name (avoids API lookup for bot-to-bot). */
+  _senderNameOverride?: string;
 }): Promise<void> {
   const { cfg, event, botOpenId, runtime, chatHistories, accountId } = params;
 
@@ -552,23 +556,28 @@ export async function handleFeishuMessage(params: {
   const isGroup = ctx.chatType === "group";
 
   // Resolve sender display name (best-effort) so the agent can attribute messages correctly.
-  const senderResult = await resolveFeishuSenderName({
-    account,
-    senderOpenId: ctx.senderOpenId,
-    log,
-  });
-  if (senderResult.name) ctx = { ...ctx, senderName: senderResult.name };
-
-  // Track permission error to inform agent later (with cooldown to avoid repetition)
+  // For cross-bot dispatches, use the override to avoid unnecessary API calls.
   let permissionErrorForAgent: PermissionError | undefined;
-  if (senderResult.permissionError) {
-    const appKey = account.appId ?? "default";
-    const now = Date.now();
-    const lastNotified = permissionErrorNotifiedAt.get(appKey) ?? 0;
+  if (params._senderNameOverride) {
+    ctx = { ...ctx, senderName: params._senderNameOverride };
+  } else {
+    const senderResult = await resolveFeishuSenderName({
+      account,
+      senderOpenId: ctx.senderOpenId,
+      log,
+    });
+    if (senderResult.name) ctx = { ...ctx, senderName: senderResult.name };
 
-    if (now - lastNotified > PERMISSION_ERROR_COOLDOWN_MS) {
-      permissionErrorNotifiedAt.set(appKey, now);
-      permissionErrorForAgent = senderResult.permissionError;
+    // Track permission error to inform agent later (with cooldown to avoid repetition)
+    if (senderResult.permissionError) {
+      const appKey = account.appId ?? "default";
+      const now = Date.now();
+      const lastNotified = permissionErrorNotifiedAt.get(appKey) ?? 0;
+
+      if (now - lastNotified > PERMISSION_ERROR_COOLDOWN_MS) {
+        permissionErrorNotifiedAt.set(appKey, now);
+        permissionErrorForAgent = senderResult.permissionError;
+      }
     }
   }
 
@@ -968,6 +977,7 @@ export async function handleFeishuMessage(params: {
       replyToMessageId: ctx.messageId,
       mentionTargets: ctx.mentionTargets,
       accountId: account.accountId,
+      skipCrossBotDispatch: params._fromCrossBotDispatch,
     });
 
     log(`feishu[${account.accountId}]: dispatching to agent (session=${route.sessionKey})`);

@@ -8,7 +8,10 @@ import {
 } from "openclaw/plugin-sdk";
 import type { MentionTarget } from "./mention.js";
 import { resolveFeishuAccount } from "./accounts.js";
-import { broadcastFeishuBotMessageToOtherAccounts } from "./cross-bot-broadcast.js";
+import {
+  broadcastFeishuBotMessageToOtherAccounts,
+  dispatchCrossBotMentions,
+} from "./cross-bot-broadcast.js";
 import { getFeishuRuntime } from "./runtime.js";
 import { sendMessageFeishu, sendMarkdownCardFeishu } from "./send.js";
 import { addTypingIndicator, removeTypingIndicator, type TypingIndicatorState } from "./typing.js";
@@ -40,11 +43,22 @@ export type CreateFeishuReplyDispatcherParams = {
   mentionTargets?: MentionTarget[];
   /** Account ID for multi-account support */
   accountId?: string;
+  /** Skip cross-bot @mention dispatch (set when this reply originates from a cross-bot dispatch). */
+  skipCrossBotDispatch?: boolean;
 };
 
 export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherParams) {
   const core = getFeishuRuntime();
-  const { cfg, agentId, chatId, chatType, replyToMessageId, mentionTargets, accountId } = params;
+  const {
+    cfg,
+    agentId,
+    chatId,
+    chatType,
+    replyToMessageId,
+    mentionTargets,
+    accountId,
+    skipCrossBotDispatch,
+  } = params;
 
   // Resolve account for config access
   const account = resolveFeishuAccount({ cfg, accountId });
@@ -124,6 +138,9 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
         // Only include @mentions in the first chunk (avoid duplicate @s)
         let isFirstChunk = true;
 
+        // Track the last sent messageId for cross-bot dispatch after all chunks
+        let lastSentMessageId: string | undefined;
+
         if (useCard) {
           // Card mode: send as interactive card with markdown rendering
           const chunks = core.channel.text.chunkTextWithMode(text, textChunkLimit, chunkMode);
@@ -144,6 +161,8 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
               mentions: mentionList,
               accountId,
             });
+
+            lastSentMessageId = sent.messageId;
 
             if (chatType === "group") {
               broadcastFeishuBotMessageToOtherAccounts({
@@ -181,6 +200,8 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
               accountId,
             });
 
+            lastSentMessageId = sent.messageId;
+
             if (chatType === "group") {
               broadcastFeishuBotMessageToOtherAccounts({
                 cfg,
@@ -195,6 +216,26 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
 
             isFirstChunk = false;
           }
+        }
+
+        // After all chunks are sent, dispatch to any @mentioned bots
+        if (chatType === "group" && lastSentMessageId && !skipCrossBotDispatch) {
+          const mentionTargetOpenIds = mentionTargets?.map((m) => m.openId);
+          dispatchCrossBotMentions({
+            cfg,
+            chatId,
+            senderAccountId: account.accountId,
+            senderBotName: account.name ?? account.accountId,
+            text,
+            messageId: lastSentMessageId,
+            mentionTargetOpenIds,
+            runtime: params.runtime,
+            log: (msg) => params.runtime.log?.(msg),
+          }).catch((err) => {
+            params.runtime.log?.(
+              `feishu[${account.accountId}] cross-bot dispatch error: ${String(err)}`,
+            );
+          });
         }
       },
       onError: (err, info) => {
