@@ -974,7 +974,7 @@ export async function handleFeishuMessage(params: {
       runtime: runtime as RuntimeEnv,
       chatId: ctx.chatId,
       chatType: ctx.chatType,
-      replyToMessageId: ctx.messageId,
+      replyToMessageId: params._fromCrossBotDispatch ? undefined : ctx.messageId,
       mentionTargets: ctx.mentionTargets,
       accountId: account.accountId,
       skipCrossBotDispatch: params._fromCrossBotDispatch,
