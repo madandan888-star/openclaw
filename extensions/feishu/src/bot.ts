@@ -10,6 +10,10 @@ import type { FeishuMessageContext, FeishuMediaInfo, ResolvedFeishuAccount } fro
 import type { DynamicAgentCreationConfig } from "./types.js";
 import { resolveFeishuAccount } from "./accounts.js";
 import { createFeishuClient } from "./client.js";
+import {
+  getRegisteredFeishuAccountIds,
+  getFeishuAccountRegistration,
+} from "./cross-bot-broadcast.js";
 import { maybeCreateDynamicAgent } from "./dynamic-agent.js";
 import { downloadImageFeishu, downloadMessageResourceFeishu } from "./media.js";
 import { extractMentionTargets, extractMessageBody, isMentionForwardRequest } from "./mention.js";
@@ -554,6 +558,26 @@ export async function handleFeishuMessage(params: {
 
   let ctx = parseFeishuMessageEvent(event, botOpenId);
   const isGroup = ctx.chatType === "group";
+
+  // In group chats, skip messages sent by other registered bots via WebSocket.
+  // Cross-bot dispatch handles bot-to-bot communication — processing the WebSocket
+  // event as well would cause duplicate agent runs AND 400 errors when the bot tries
+  // to message.reply to another bot's message.
+  if (isGroup && !params._fromCrossBotDispatch) {
+    const senderOpenId = event.sender.sender_id.open_id;
+    if (senderOpenId) {
+      for (const accId of getRegisteredFeishuAccountIds()) {
+        if (accId === accountId) continue;
+        const reg = getFeishuAccountRegistration(accId);
+        if (reg?.botOpenId === senderOpenId) {
+          log(
+            `feishu[${account.accountId}]: skipping bot message from ${accId} in group (cross-bot dispatch handles this)`,
+          );
+          return;
+        }
+      }
+    }
+  }
 
   // Resolve sender display name (best-effort) so the agent can attribute messages correctly.
   // For cross-bot dispatches, use the override to avoid unnecessary API calls.

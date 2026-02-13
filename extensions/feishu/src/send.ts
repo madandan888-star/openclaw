@@ -160,22 +160,34 @@ export async function sendMessageFeishu(
   const { content, msgType } = buildFeishuPostMessagePayload({ messageText });
 
   if (replyToMessageId) {
-    const response = await client.im.message.reply({
-      path: { message_id: replyToMessageId },
-      data: {
-        content,
-        msg_type: msgType,
-      },
-    });
+    try {
+      const response = await client.im.message.reply({
+        path: { message_id: replyToMessageId },
+        data: {
+          content,
+          msg_type: msgType,
+        },
+      });
 
-    if (response.code !== 0) {
-      throw new Error(`Feishu reply failed: ${response.msg || `code ${response.code}`}`);
+      if (response.code !== 0) {
+        throw new Error(`Feishu reply failed: ${response.msg || `code ${response.code}`}`);
+      }
+
+      return {
+        messageId: response.data?.message_id ?? "unknown",
+        chatId: receiveId,
+      };
+    } catch (replyErr) {
+      // Fallback: if message.reply fails (e.g. 400 when replying to another bot's
+      // message), try message.create instead so the reply still reaches the chat.
+      const axiosData = (replyErr as any)?.response?.data;
+      console.warn(
+        `feishu[${account.accountId}] message.reply failed (replyTo=${replyToMessageId}), ` +
+          `falling back to message.create. ` +
+          `error=${String(replyErr)}` +
+          (axiosData ? ` response=${JSON.stringify(axiosData)}` : ""),
+      );
     }
-
-    return {
-      messageId: response.data?.message_id ?? "unknown",
-      chatId: receiveId,
-    };
   }
 
   const response = await client.im.message.create({
@@ -222,22 +234,32 @@ export async function sendCardFeishu(params: SendFeishuCardParams): Promise<Feis
   const content = JSON.stringify(card);
 
   if (replyToMessageId) {
-    const response = await client.im.message.reply({
-      path: { message_id: replyToMessageId },
-      data: {
-        content,
-        msg_type: "interactive",
-      },
-    });
+    try {
+      const response = await client.im.message.reply({
+        path: { message_id: replyToMessageId },
+        data: {
+          content,
+          msg_type: "interactive",
+        },
+      });
 
-    if (response.code !== 0) {
-      throw new Error(`Feishu card reply failed: ${response.msg || `code ${response.code}`}`);
+      if (response.code !== 0) {
+        throw new Error(`Feishu card reply failed: ${response.msg || `code ${response.code}`}`);
+      }
+
+      return {
+        messageId: response.data?.message_id ?? "unknown",
+        chatId: receiveId,
+      };
+    } catch (replyErr) {
+      const axiosData = (replyErr as any)?.response?.data;
+      console.warn(
+        `feishu[${account.accountId}] card message.reply failed (replyTo=${replyToMessageId}), ` +
+          `falling back to message.create. ` +
+          `error=${String(replyErr)}` +
+          (axiosData ? ` response=${JSON.stringify(axiosData)}` : ""),
+      );
     }
-
-    return {
-      messageId: response.data?.message_id ?? "unknown",
-      chatId: receiveId,
-    };
   }
 
   const response = await client.im.message.create({
