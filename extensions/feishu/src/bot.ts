@@ -686,7 +686,9 @@ export async function handleFeishuMessage(params: {
       groupConfig,
     });
 
-    if (requireMention && !ctx.mentionedBot) {
+    // System notifications (member changes etc.) bypass requireMention
+    const isSystemNotification = ctx.senderOpenId === "system";
+    if (requireMention && !ctx.mentionedBot && !isSystemNotification) {
       log(
         `feishu[${account.accountId}]: message in group ${ctx.chatId} did not mention bot, recording to history`,
       );
