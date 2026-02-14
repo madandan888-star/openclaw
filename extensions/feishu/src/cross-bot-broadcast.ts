@@ -144,8 +144,8 @@ export function findMentionedBotRegistrations(params: {
       continue;
     }
 
-    // Check @BotName in text (plain text mention by agent)
-    if (reg.botName && text.includes(`@${reg.botName}`)) {
+    // Check @BotName or plain BotName in text (agent-written mentions may omit the @)
+    if (reg.botName && (text.includes(`@${reg.botName}`) || text.includes(reg.botName))) {
       matched.set(accountId, reg);
       continue;
     }
@@ -196,7 +196,23 @@ export async function dispatchCrossBotMentions(
     log,
   } = params;
 
-  if (!chatId?.startsWith("oc_")) return;
+  if (!chatId?.startsWith("oc_")) {
+    log?.(`dispatchCrossBotMentions: skip — chatId=${chatId} not oc_`);
+    return;
+  }
+
+  log?.(
+    `dispatchCrossBotMentions: checking mentions sender=${senderAccountId} chatId=${chatId} textLen=${text.length} mentionTargetOpenIds=${mentionTargetOpenIds?.join(",") ?? "none"} depth=${crossBotDepth}`,
+  );
+
+  // Log all registered accounts for debugging
+  const allRegIds = [...registrations.keys()];
+  log?.(`dispatchCrossBotMentions: registered accounts: ${allRegIds.join(", ")}`);
+  for (const [accId, reg] of registrations) {
+    log?.(
+      `dispatchCrossBotMentions: reg[${accId}] botOpenId=${reg.botOpenId ?? "none"} botName=${reg.botName ?? "none"}`,
+    );
+  }
 
   const mentionedBots = findMentionedBotRegistrations({
     text,
@@ -204,7 +220,14 @@ export async function dispatchCrossBotMentions(
     excludeAccountId: senderAccountId,
   });
 
-  if (mentionedBots.length === 0) return;
+  log?.(`dispatchCrossBotMentions: found ${mentionedBots.length} mentioned bots`);
+
+  if (mentionedBots.length === 0) {
+    log?.(
+      `dispatchCrossBotMentions: no mentioned bots found, text preview: "${text.slice(0, 200)}"`,
+    );
+    return;
+  }
 
   const senderReg = registrations.get(senderAccountId);
   const senderBotOpenId = senderReg?.botOpenId || `bot_${senderAccountId}`;

@@ -40,6 +40,13 @@ export type CreateFeishuReplyDispatcherParams = {
 
 export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherParams) {
   const core = getFeishuRuntime();
+
+  // Ensure runtime is always defined (cross-bot dispatch from outbound may pass undefined)
+  const noop = () => {};
+  if (!params.runtime) {
+    params = { ...params, runtime: { log: noop, error: noop } as RuntimeEnv };
+  }
+
   const {
     cfg,
     agentId,
@@ -158,10 +165,17 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
       deliver: async (payload: ReplyPayload, info) => {
         const text = payload.text ?? "";
         if (!text.trim()) {
+          params.runtime.log?.(
+            `feishu[${account.accountId}] deliver: empty text, skipping (kind=${info?.kind})`,
+          );
           return;
         }
 
         const useCard = renderMode === "card" || (renderMode === "auto" && shouldUseCard(text));
+
+        params.runtime.log?.(
+          `feishu[${account.accountId}] deliver: kind=${info?.kind} len=${text.length} useCard=${useCard} streaming=${streamingEnabled} chatId=${chatId}`,
+        );
 
         if ((info?.kind === "block" || info?.kind === "final") && streamingEnabled && useCard) {
           startStreaming();
@@ -172,6 +186,9 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
 
         // Streaming card path — update in-place, no chunk sending
         if (streaming?.isActive()) {
+          params.runtime.log?.(
+            `feishu[${account.accountId}] deliver: streaming active, kind=${info?.kind}`,
+          );
           if (info?.kind === "final") {
             streamText = text;
             await closeStreaming();
@@ -247,6 +264,10 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
             first = false;
           }
         }
+
+        params.runtime.log?.(
+          `feishu[${account.accountId}] deliver: sent ${first ? 0 : "chunks"} lastMsgId=${lastSentMessageId ?? "none"} to=${chatId}`,
+        );
 
         // After all chunks are sent, dispatch to any @mentioned bots
         if (chatType === "group" && lastSentMessageId && crossBotDepth < MAX_CROSS_BOT_DEPTH) {

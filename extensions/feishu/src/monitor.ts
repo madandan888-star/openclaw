@@ -3,7 +3,12 @@ import * as Lark from "@larksuiteoapi/node-sdk";
 import * as http from "http";
 import type { ResolvedFeishuAccount } from "./types.js";
 import { resolveFeishuAccount, listEnabledFeishuAccounts } from "./accounts.js";
-import { handleFeishuMessage, type FeishuMessageEvent, type FeishuBotAddedEvent } from "./bot.js";
+import {
+  handleFeishuMessage,
+  type FeishuMessageEvent,
+  type FeishuBotAddedEvent,
+  type FeishuUserMemberEvent,
+} from "./bot.js";
 import { createFeishuWSClient, createEventDispatcher } from "./client.js";
 import {
   registerFeishuAccountHistory,
@@ -32,6 +37,59 @@ async function fetchBotInfo(
     return result.ok ? { openId: result.botOpenId, name: result.botName } : {};
   } catch {
     return {};
+  }
+}
+
+/**
+ * Dispatch a group member change notification as a synthetic message to the agent session.
+ */
+function dispatchMemberChangeNotification(params: {
+  cfg: ClawdbotConfig;
+  accountId: string;
+  runtime?: RuntimeEnv;
+  chatId: string;
+  chatHistories: Map<string, HistoryEntry[]>;
+  text: string;
+  fireAndForget?: boolean;
+  log: (...args: any[]) => void;
+  error: (...args: any[]) => void;
+}): void {
+  const { cfg, accountId, runtime, chatId, chatHistories, text, fireAndForget, log, error } =
+    params;
+
+  // Build a synthetic FeishuMessageEvent so it flows through the normal message pipeline
+  const syntheticEvent: FeishuMessageEvent = {
+    sender: {
+      sender_id: { open_id: "system" },
+      sender_type: "system",
+    },
+    message: {
+      message_id: `member_change_${chatId}_${Date.now()}`,
+      chat_id: chatId,
+      chat_type: "group",
+      message_type: "text",
+      content: JSON.stringify({ text }),
+    },
+  };
+
+  const promise = handleFeishuMessage({
+    cfg,
+    event: syntheticEvent,
+    botOpenId: botOpenIds.get(accountId),
+    runtime,
+    chatHistories,
+    accountId,
+    _senderNameOverride: "系统",
+  });
+
+  if (fireAndForget) {
+    promise.catch((err) => {
+      error(`feishu[${accountId}]: error dispatching member change notification: ${String(err)}`);
+    });
+  } else {
+    promise.catch((err) => {
+      error(`feishu[${accountId}]: error dispatching member change notification: ${String(err)}`);
+    });
   }
 }
 
@@ -94,6 +152,56 @@ function registerEventHandlers(
         log(`feishu[${accountId}]: bot removed from chat ${event.chat_id}`);
       } catch (err) {
         error(`feishu[${accountId}]: error handling bot removed event: ${String(err)}`);
+      }
+    },
+    "im.chat.member.user.added_v1": async (data) => {
+      try {
+        const event = data as unknown as FeishuUserMemberEvent;
+        const users = event.users ?? [];
+        for (const user of users) {
+          const name = user.name ?? "unknown";
+          const openId = user.user_id?.open_id ?? "unknown";
+          log(`feishu[${accountId}]: user ${name} (${openId}) added to chat ${event.chat_id}`);
+          const text = `[系统通知] 用户 ${name} (open_id: ${openId}) 加入了群聊`;
+          dispatchMemberChangeNotification({
+            cfg,
+            accountId,
+            runtime,
+            chatId: event.chat_id,
+            chatHistories,
+            text,
+            fireAndForget,
+            log,
+            error,
+          });
+        }
+      } catch (err) {
+        error(`feishu[${accountId}]: error handling user added event: ${String(err)}`);
+      }
+    },
+    "im.chat.member.user.deleted_v1": async (data) => {
+      try {
+        const event = data as unknown as FeishuUserMemberEvent;
+        const users = event.users ?? [];
+        for (const user of users) {
+          const name = user.name ?? "unknown";
+          const openId = user.user_id?.open_id ?? "unknown";
+          log(`feishu[${accountId}]: user ${name} (${openId}) removed from chat ${event.chat_id}`);
+          const text = `[系统通知] 用户 ${name} (open_id: ${openId}) 离开了群聊`;
+          dispatchMemberChangeNotification({
+            cfg,
+            accountId,
+            runtime,
+            chatId: event.chat_id,
+            chatHistories,
+            text,
+            fireAndForget,
+            log,
+            error,
+          });
+        }
+      } catch (err) {
+        error(`feishu[${accountId}]: error handling user deleted event: ${String(err)}`);
       }
     },
   });

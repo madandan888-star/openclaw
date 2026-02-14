@@ -200,6 +200,26 @@ export type FeishuBotAddedEvent = {
   operator_tenant_key?: string;
 };
 
+export type FeishuUserMemberEvent = {
+  chat_id: string;
+  operator_id?: {
+    open_id?: string;
+    user_id?: string;
+    union_id?: string;
+  };
+  external?: boolean;
+  operator_tenant_key?: string;
+  users?: Array<{
+    name?: string;
+    tenant_key?: string;
+    user_id?: {
+      open_id?: string;
+      user_id?: string;
+      union_id?: string;
+    };
+  }>;
+};
+
 function parseMessageContent(content: string, messageType: string): string {
   try {
     const parsed = JSON.parse(content);
@@ -1080,7 +1100,7 @@ export async function handleFeishuMessage(params: {
     }
 
     log(
-      `feishu[${account.accountId}]: dispatch complete (queuedFinal=${queuedFinal}, replies=${counts.final})`,
+      `feishu[${account.accountId}]: dispatch complete (queuedFinal=${queuedFinal}, final=${counts.final}, block=${counts.block}, tool=${counts.tool})`,
     );
   } catch (err) {
     error(`feishu[${account.accountId}]: failed to dispatch message: ${String(err)}`);
