@@ -185,3 +185,58 @@ export async function searchKeyword(params: {
     };
   });
 }
+
+export async function searchTrigramKeyword(params: {
+  db: DatabaseSync;
+  ftsTable: string;
+  providerModel: string;
+  query: string;
+  limit: number;
+  snippetMaxChars: number;
+  sourceFilter: { sql: string; params: SearchSource[] };
+  bm25RankToScore: (rank: number) => number;
+}): Promise<Array<SearchRowResult & { textScore: number }>> {
+  if (params.limit <= 0) {
+    return [];
+  }
+  const cleaned = params.query.trim();
+  if (!cleaned) {
+    return [];
+  }
+  // For trigram FTS, wrap the query text in double quotes for phrase search.
+  // Trigram tokenizer natively supports substring matching.
+  const ftsQuery = `"${cleaned.replaceAll('"', "")}"`;
+
+  const rows = params.db
+    .prepare(
+      `SELECT id, path, source, start_line, end_line, text,\n` +
+        `       bm25(${params.ftsTable}) AS rank\n` +
+        `  FROM ${params.ftsTable}\n` +
+        ` WHERE ${params.ftsTable} MATCH ? AND model = ?${params.sourceFilter.sql}\n` +
+        ` ORDER BY rank ASC\n` +
+        ` LIMIT ?`,
+    )
+    .all(ftsQuery, params.providerModel, ...params.sourceFilter.params, params.limit) as Array<{
+    id: string;
+    path: string;
+    source: SearchSource;
+    start_line: number;
+    end_line: number;
+    text: string;
+    rank: number;
+  }>;
+
+  return rows.map((row) => {
+    const textScore = params.bm25RankToScore(row.rank);
+    return {
+      id: row.id,
+      path: row.path,
+      startLine: row.start_line,
+      endLine: row.end_line,
+      score: textScore,
+      textScore,
+      snippet: truncateUtf16Safe(row.text, params.snippetMaxChars),
+      source: row.source,
+    };
+  });
+}

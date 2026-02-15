@@ -5,7 +5,7 @@ export function ensureMemoryIndexSchema(params: {
   embeddingCacheTable: string;
   ftsTable: string;
   ftsEnabled: boolean;
-}): { ftsAvailable: boolean; ftsError?: string } {
+}): { ftsAvailable: boolean; ftsError?: string; trigramAvailable: boolean; trigramError?: string } {
   params.db.exec(`
     CREATE TABLE IF NOT EXISTS meta (
       key TEXT PRIMARY KEY,
@@ -74,12 +74,41 @@ export function ensureMemoryIndexSchema(params: {
     }
   }
 
+  let trigramAvailable = false;
+  let trigramError: string | undefined;
+  if (params.ftsEnabled) {
+    try {
+      params.db.exec(
+        `CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts_trigram USING fts5(\n` +
+          `  text,\n` +
+          `  id UNINDEXED,\n` +
+          `  path UNINDEXED,\n` +
+          `  source UNINDEXED,\n` +
+          `  model UNINDEXED,\n` +
+          `  start_line UNINDEXED,\n` +
+          `  end_line UNINDEXED,\n` +
+          `  tokenize="trigram"\n` +
+          `);`,
+      );
+      trigramAvailable = true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      trigramAvailable = false;
+      trigramError = message;
+    }
+  }
+
   ensureColumn(params.db, "files", "source", "TEXT NOT NULL DEFAULT 'memory'");
   ensureColumn(params.db, "chunks", "source", "TEXT NOT NULL DEFAULT 'memory'");
   params.db.exec(`CREATE INDEX IF NOT EXISTS idx_chunks_path ON chunks(path);`);
   params.db.exec(`CREATE INDEX IF NOT EXISTS idx_chunks_source ON chunks(source);`);
 
-  return { ftsAvailable, ...(ftsError ? { ftsError } : {}) };
+  return {
+    ftsAvailable,
+    ...(ftsError ? { ftsError } : {}),
+    trigramAvailable,
+    ...(trigramError ? { trigramError } : {}),
+  };
 }
 
 function ensureColumn(

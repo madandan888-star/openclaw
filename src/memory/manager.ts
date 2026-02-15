@@ -26,11 +26,12 @@ import {
 import { bm25RankToScore, buildFtsQuery, mergeHybridResults } from "./hybrid.js";
 import { isMemoryPath, normalizeExtraMemoryPaths } from "./internal.js";
 import { memoryManagerEmbeddingOps } from "./manager-embedding-ops.js";
-import { searchKeyword, searchVector } from "./manager-search.js";
+import { searchKeyword, searchTrigramKeyword, searchVector } from "./manager-search.js";
 import { memoryManagerSyncOps } from "./manager-sync-ops.js";
 const SNIPPET_MAX_CHARS = 700;
 const VECTOR_TABLE = "chunks_vec";
 const FTS_TABLE = "chunks_fts";
+const FTS_TRIGRAM_TABLE = "chunks_fts_trigram";
 const EMBEDDING_CACHE_TABLE = "embedding_cache";
 const BATCH_FAILURE_LIMIT = 2;
 
@@ -76,6 +77,11 @@ export class MemoryIndexManager implements MemorySearchManager {
     dims?: number;
   };
   private readonly fts: {
+    enabled: boolean;
+    available: boolean;
+    loadError?: string;
+  };
+  private readonly trigramFts: {
     enabled: boolean;
     available: boolean;
     loadError?: string;
@@ -162,6 +168,7 @@ export class MemoryIndexManager implements MemorySearchManager {
       maxEntries: params.settings.cache.maxEntries,
     };
     this.fts = { enabled: params.settings.query.hybrid.enabled, available: false };
+    this.trigramFts = { enabled: params.settings.query.hybrid.enabled, available: false };
     this.ensureSchema();
     this.vector = {
       enabled: params.settings.store.vector.enabled,
@@ -221,9 +228,15 @@ export class MemoryIndexManager implements MemorySearchManager {
       Math.max(1, Math.floor(maxResults * hybrid.candidateMultiplier)),
     );
 
-    const keywordResults = hybrid.enabled
-      ? await this.searchKeyword(cleaned, candidates).catch(() => [])
-      : [];
+    const [keywordResults, trigramResults] = hybrid.enabled
+      ? await Promise.all([
+          this.searchKeyword(cleaned, candidates).catch(() => []),
+          this.searchTrigramKeyword(cleaned, candidates).catch(() => []),
+        ])
+      : [[], []];
+
+    // Merge unicode61 and trigram keyword results (union, keep higher score)
+    const mergedKeywordResults = this.mergeKeywordResults(keywordResults, trigramResults);
 
     const queryVec = (await this.embedQueryWithTimeout(cleaned)) as number[];
     const hasVector = queryVec.some((v) => v !== 0);
@@ -237,7 +250,7 @@ export class MemoryIndexManager implements MemorySearchManager {
 
     const merged = this.mergeHybridResults({
       vector: vectorResults,
-      keyword: keywordResults,
+      keyword: mergedKeywordResults,
       vectorWeight: hybrid.vectorWeight,
       textWeight: hybrid.textWeight,
     });
@@ -287,6 +300,44 @@ export class MemoryIndexManager implements MemorySearchManager {
       bm25RankToScore,
     });
     return results.map((entry) => entry as MemorySearchResult & { id: string; textScore: number });
+  }
+
+  private async searchTrigramKeyword(
+    query: string,
+    limit: number,
+  ): Promise<Array<MemorySearchResult & { id: string; textScore: number }>> {
+    if (!this.trigramFts.enabled || !this.trigramFts.available) {
+      return [];
+    }
+    const sourceFilter = this.buildSourceFilter();
+    const results = await searchTrigramKeyword({
+      db: this.db,
+      ftsTable: FTS_TRIGRAM_TABLE,
+      providerModel: this.provider.model,
+      query,
+      limit,
+      snippetMaxChars: SNIPPET_MAX_CHARS,
+      sourceFilter,
+      bm25RankToScore,
+    });
+    return results.map((entry) => entry as MemorySearchResult & { id: string; textScore: number });
+  }
+
+  private mergeKeywordResults(
+    unicode61: Array<MemorySearchResult & { id: string; textScore: number }>,
+    trigram: Array<MemorySearchResult & { id: string; textScore: number }>,
+  ): Array<MemorySearchResult & { id: string; textScore: number }> {
+    const byId = new Map<string, MemorySearchResult & { id: string; textScore: number }>();
+    for (const r of unicode61) {
+      byId.set(r.id, r);
+    }
+    for (const r of trigram) {
+      const existing = byId.get(r.id);
+      if (!existing || r.textScore > existing.textScore) {
+        byId.set(r.id, r);
+      }
+    }
+    return Array.from(byId.values());
   }
 
   private mergeHybridResults(params: {

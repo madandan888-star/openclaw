@@ -23,10 +23,16 @@ export type HybridKeywordResult = {
 export function buildFtsQuery(raw: string): string | null {
   const tokens =
     raw
-      .match(/[A-Za-z0-9_]+/g)
+      .match(/[\p{L}\p{N}_]+/gu)
       ?.map((t) => t.trim())
       .filter(Boolean) ?? [];
   if (tokens.length === 0) {
+    return null;
+  }
+  // Trigram tokenizer requires at least 3 characters per token to match.
+  // If all tokens are shorter than 3 characters, return null so callers
+  // can fall back to the trigram table which handles short CJK queries.
+  if (tokens.every((t) => t.length < 3)) {
     return null;
   }
   const quoted = tokens.map((t) => `"${t.replaceAll('"', "")}"`);

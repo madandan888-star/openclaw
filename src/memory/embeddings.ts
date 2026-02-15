@@ -63,7 +63,7 @@ export type EmbeddingProviderOptions = {
 };
 
 export const DEFAULT_LOCAL_MODEL =
-  "hf:ggml-org/embeddinggemma-300m-qat-q8_0-GGUF/embeddinggemma-300m-qat-Q8_0.gguf";
+  "hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf";
 
 function canAutoSelectLocal(options: EmbeddingProviderOptions): boolean {
   const modelPath = options.local?.modelPath?.trim();

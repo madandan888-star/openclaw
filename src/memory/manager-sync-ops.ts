@@ -257,6 +257,11 @@ class MemoryManagerSyncOps {
       this.fts.loadError = result.ftsError;
       log.warn(`fts unavailable: ${result.ftsError}`);
     }
+    this.trigramFts.available = result.trigramAvailable;
+    if (result.trigramError) {
+      this.trigramFts.loadError = result.trigramError;
+      log.warn(`trigram fts unavailable: ${result.trigramError}`);
+    }
   }
 
   private ensureWatcher() {
@@ -589,6 +594,13 @@ class MemoryManagerSyncOps {
             .run(stale.path, "memory", this.provider.model);
         } catch {}
       }
+      if (this.trigramFts.enabled && this.trigramFts.available) {
+        try {
+          this.db
+            .prepare(`DELETE FROM chunks_fts_trigram WHERE path = ? AND source = ? AND model = ?`)
+            .run(stale.path, "memory", this.provider.model);
+        } catch {}
+      }
     }
   }
 
@@ -687,6 +699,13 @@ class MemoryManagerSyncOps {
         try {
           this.db
             .prepare(`DELETE FROM ${FTS_TABLE} WHERE path = ? AND source = ? AND model = ?`)
+            .run(stale.path, "sessions", this.provider.model);
+        } catch {}
+      }
+      if (this.trigramFts.enabled && this.trigramFts.available) {
+        try {
+          this.db
+            .prepare(`DELETE FROM chunks_fts_trigram WHERE path = ? AND source = ? AND model = ?`)
             .run(stale.path, "sessions", this.provider.model);
         } catch {}
       }
@@ -879,6 +898,8 @@ class MemoryManagerSyncOps {
     const originalState = {
       ftsAvailable: this.fts.available,
       ftsError: this.fts.loadError,
+      trigramFtsAvailable: this.trigramFts.available,
+      trigramFtsError: this.trigramFts.loadError,
       vectorAvailable: this.vector.available,
       vectorLoadError: this.vector.loadError,
       vectorDims: this.vector.dims,
@@ -893,6 +914,8 @@ class MemoryManagerSyncOps {
       }
       this.fts.available = originalState.ftsAvailable;
       this.fts.loadError = originalState.ftsError;
+      this.trigramFts.available = originalState.trigramFtsAvailable;
+      this.trigramFts.loadError = originalState.trigramFtsError;
       this.vector.available = originalDbClosed ? null : originalState.vectorAvailable;
       this.vector.loadError = originalState.vectorLoadError;
       this.vector.dims = originalState.vectorDims;
@@ -906,6 +929,8 @@ class MemoryManagerSyncOps {
     this.vector.dims = undefined;
     this.fts.available = false;
     this.fts.loadError = undefined;
+    this.trigramFts.available = false;
+    this.trigramFts.loadError = undefined;
     this.ensureSchema();
 
     let nextMeta: MemoryIndexMeta | null = null;
@@ -1020,6 +1045,11 @@ class MemoryManagerSyncOps {
     if (this.fts.enabled && this.fts.available) {
       try {
         this.db.exec(`DELETE FROM ${FTS_TABLE}`);
+      } catch {}
+    }
+    if (this.trigramFts.enabled && this.trigramFts.available) {
+      try {
+        this.db.exec(`DELETE FROM chunks_fts_trigram`);
       } catch {}
     }
     this.dropVectorTable();

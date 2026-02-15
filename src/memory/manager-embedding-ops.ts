@@ -24,6 +24,7 @@ import {
 
 const VECTOR_TABLE = "chunks_vec";
 const FTS_TABLE = "chunks_fts";
+const FTS_TRIGRAM_TABLE = "chunks_fts_trigram";
 const EMBEDDING_CACHE_TABLE = "embedding_cache";
 const EMBEDDING_BATCH_MAX_TOKENS = 8000;
 const EMBEDDING_INDEX_CONCURRENCY = 4;
@@ -730,6 +731,13 @@ class MemoryManagerEmbeddingOps {
           .run(entry.path, options.source, this.provider.model);
       } catch {}
     }
+    if (this.trigramFts.enabled && this.trigramFts.available) {
+      try {
+        this.db
+          .prepare(`DELETE FROM ${FTS_TRIGRAM_TABLE} WHERE path = ? AND source = ? AND model = ?`)
+          .run(entry.path, options.source, this.provider.model);
+      } catch {}
+    }
     this.db
       .prepare(`DELETE FROM chunks WHERE path = ? AND source = ?`)
       .run(entry.path, options.source);
@@ -774,6 +782,22 @@ class MemoryManagerEmbeddingOps {
         this.db
           .prepare(
             `INSERT INTO ${FTS_TABLE} (text, id, path, source, model, start_line, end_line)\n` +
+              ` VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            chunk.text,
+            id,
+            entry.path,
+            options.source,
+            this.provider.model,
+            chunk.startLine,
+            chunk.endLine,
+          );
+      }
+      if (this.trigramFts.enabled && this.trigramFts.available) {
+        this.db
+          .prepare(
+            `INSERT INTO ${FTS_TRIGRAM_TABLE} (text, id, path, source, model, start_line, end_line)\n` +
               ` VALUES (?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
