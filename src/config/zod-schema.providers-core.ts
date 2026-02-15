@@ -216,17 +216,7 @@ export const DiscordDmSchema = z
     groupEnabled: z.boolean().optional(),
     groupChannels: z.array(z.union([z.string(), z.number()])).optional(),
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    requireOpenAllowFrom({
-      policy: value.policy,
-      allowFrom: value.allowFrom,
-      ctx,
-      path: ["allowFrom"],
-      message:
-        'channels.discord.dm.policy="open" requires channels.discord.dm.allowFrom to include "*"',
-    });
-  });
+  .strict();
 
 export const DiscordGuildChannelSchema = z
   .object({
@@ -266,6 +256,7 @@ export const DiscordAccountSchema = z
     commands: ProviderCommandsSchema,
     configWrites: z.boolean().optional(),
     token: z.string().optional().register(sensitive),
+    proxy: z.string().optional(),
     allowBots: z.boolean().optional(),
     groupPolicy: GroupPolicySchema.optional().default("allowlist"),
     historyLimit: z.number().int().min(0).optional(),
@@ -303,6 +294,10 @@ export const DiscordAccountSchema = z
       .strict()
       .optional(),
     replyToMode: ReplyToModeSchema.optional(),
+    // Aliases for channels.discord.dm.policy / channels.discord.dm.allowFrom. Prefer these for
+    // inheritance in multi-account setups (shallow merge works; nested dm object doesn't).
+    dmPolicy: DmPolicySchema.optional(),
+    allowFrom: z.array(z.union([z.string(), z.number()])).optional(),
     dm: DiscordDmSchema.optional(),
     guilds: z.record(z.string(), DiscordGuildSchema.optional()).optional(),
     heartbeat: ChannelHeartbeatVisibilitySchema,
@@ -313,6 +308,7 @@ export const DiscordAccountSchema = z
         agentFilter: z.array(z.string()).optional(),
         sessionFilter: z.array(z.string()).optional(),
         cleanupAfterResolve: z.boolean().optional(),
+        target: z.enum(["dm", "channel", "both"]).optional(),
       })
       .strict()
       .optional(),
@@ -331,8 +327,58 @@ export const DiscordAccountSchema = z
       .strict()
       .optional(),
     responsePrefix: z.string().optional(),
+    activity: z.string().optional(),
+    status: z.enum(["online", "dnd", "idle", "invisible"]).optional(),
+    activityType: z
+      .union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)])
+      .optional(),
+    activityUrl: z.string().url().optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    const activityText = typeof value.activity === "string" ? value.activity.trim() : "";
+    const hasActivity = Boolean(activityText);
+    const hasActivityType = value.activityType !== undefined;
+    const activityUrl = typeof value.activityUrl === "string" ? value.activityUrl.trim() : "";
+    const hasActivityUrl = Boolean(activityUrl);
+
+    if ((hasActivityType || hasActivityUrl) && !hasActivity) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "channels.discord.activity is required when activityType or activityUrl is set",
+        path: ["activity"],
+      });
+    }
+
+    if (value.activityType === 1 && !hasActivityUrl) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "channels.discord.activityUrl is required when activityType is 1 (Streaming)",
+        path: ["activityUrl"],
+      });
+    }
+
+    if (hasActivityUrl && value.activityType !== 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "channels.discord.activityType must be 1 (Streaming) when activityUrl is set",
+        path: ["activityType"],
+      });
+    }
+
+    const dmPolicy = value.dmPolicy ?? value.dm?.policy ?? "pairing";
+    const allowFrom = value.allowFrom ?? value.dm?.allowFrom;
+    const allowFromPath =
+      value.allowFrom !== undefined ? (["allowFrom"] as const) : (["dm", "allowFrom"] as const);
+    requireOpenAllowFrom({
+      policy: dmPolicy,
+      allowFrom,
+      ctx,
+      path: [...allowFromPath],
+      message:
+        'channels.discord.dmPolicy="open" requires channels.discord.allowFrom (or channels.discord.dm.allowFrom) to include "*"',
+    });
+  });
 
 export const DiscordConfigSchema = DiscordAccountSchema.extend({
   accounts: z.record(z.string(), DiscordAccountSchema.optional()).optional(),
@@ -419,17 +465,7 @@ export const SlackDmSchema = z
     groupChannels: z.array(z.union([z.string(), z.number()])).optional(),
     replyToMode: ReplyToModeSchema.optional(),
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    requireOpenAllowFrom({
-      policy: value.policy,
-      allowFrom: value.allowFrom,
-      ctx,
-      path: ["allowFrom"],
-      message:
-        'channels.slack.dm.policy="open" requires channels.slack.dm.allowFrom to include "*"',
-    });
-  });
+  .strict();
 
 export const SlackChannelSchema = z
   .object({
@@ -514,14 +550,32 @@ export const SlackAccountSchema = z
       })
       .strict()
       .optional(),
+    // Aliases for channels.slack.dm.policy / channels.slack.dm.allowFrom. Prefer these for
+    // inheritance in multi-account setups (shallow merge works; nested dm object doesn't).
+    dmPolicy: DmPolicySchema.optional(),
+    allowFrom: z.array(z.union([z.string(), z.number()])).optional(),
     dm: SlackDmSchema.optional(),
     channels: z.record(z.string(), SlackChannelSchema.optional()).optional(),
     heartbeat: ChannelHeartbeatVisibilitySchema,
     responsePrefix: z.string().optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    const dmPolicy = value.dmPolicy ?? value.dm?.policy ?? "pairing";
+    const allowFrom = value.allowFrom ?? value.dm?.allowFrom;
+    const allowFromPath =
+      value.allowFrom !== undefined ? (["allowFrom"] as const) : (["dm", "allowFrom"] as const);
+    requireOpenAllowFrom({
+      policy: dmPolicy,
+      allowFrom,
+      ctx,
+      path: [...allowFromPath],
+      message:
+        'channels.slack.dmPolicy="open" requires channels.slack.allowFrom (or channels.slack.dm.allowFrom) to include "*"',
+    });
+  });
 
-export const SlackConfigSchema = SlackAccountSchema.extend({
+export const SlackConfigSchema = SlackAccountSchema.safeExtend({
   mode: z.enum(["socket", "http"]).optional().default("socket"),
   signingSecret: z.string().optional().register(sensitive),
   webhookPath: z.string().optional().default("/slack/events"),
@@ -836,6 +890,7 @@ export const BlueBubblesAccountSchemaBase = z
     textChunkLimit: z.number().int().positive().optional(),
     chunkMode: z.enum(["length", "newline"]).optional(),
     mediaMaxMb: z.number().int().positive().optional(),
+    mediaLocalRoots: z.array(z.string()).optional(),
     sendReadReceipts: z.boolean().optional(),
     blockStreaming: z.boolean().optional(),
     blockStreamingCoalesce: BlockStreamingCoalesceSchema.optional(),

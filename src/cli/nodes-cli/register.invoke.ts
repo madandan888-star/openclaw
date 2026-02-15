@@ -269,8 +269,23 @@ export function registerNodesInvokeCommands(nodes: Command) {
           }
 
           const requiresAsk = hostAsk === "always" || hostAsk === "on-miss";
+          let approvalId: string | null = null;
           if (requiresAsk) {
-            const decisionResult = (await callGatewayCli("exec.approval.request", opts, {
+            approvalId = crypto.randomUUID();
+            const approvalTimeoutMs = 120_000;
+            // The CLI transport timeout (opts.timeout) must be longer than the
+            // gateway-side approval wait so the connection stays alive while the
+            // user decides.  Without this override the default 35 s transport
+            // timeout races — and always loses — against the 120 s approval
+            // timeout, causing "gateway timeout after 35000ms" (#12098).
+            const approvalOpts = {
+              ...opts,
+              timeout: String(
+                Math.max(parseTimeoutMs(opts.timeout) ?? 0, approvalTimeoutMs + 10_000),
+              ),
+            };
+            const decisionResult = (await callGatewayCli("exec.approval.request", approvalOpts, {
+              id: approvalId,
               command: rawCommand ?? argv.join(" "),
               cwd: opts.cwd,
               host: "node",
@@ -279,7 +294,7 @@ export function registerNodesInvokeCommands(nodes: Command) {
               agentId,
               resolvedPath: undefined,
               sessionKey: undefined,
-              timeoutMs: 120_000,
+              timeoutMs: approvalTimeoutMs,
             })) as { decision?: string } | null;
             const decision =
               decisionResult && typeof decisionResult === "object"
@@ -329,6 +344,9 @@ export function registerNodesInvokeCommands(nodes: Command) {
           (invokeParams.params as Record<string, unknown>).approved = approvedByAsk;
           if (approvalDecision) {
             (invokeParams.params as Record<string, unknown>).approvalDecision = approvalDecision;
+          }
+          if (approvedByAsk && approvalId) {
+            (invokeParams.params as Record<string, unknown>).runId = approvalId;
           }
           if (invokeTimeout !== undefined) {
             invokeParams.timeoutMs = invokeTimeout;

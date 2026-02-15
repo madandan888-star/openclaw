@@ -301,6 +301,9 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
         await closeStreaming();
         typingCallbacks.onIdle?.();
       },
+      onCleanup: () => {
+        typingCallbacks.onCleanup?.();
+      },
     });
 
   return {

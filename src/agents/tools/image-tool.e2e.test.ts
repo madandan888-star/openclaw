@@ -299,7 +299,7 @@ describe("image tool MiniMax VLM routing", () => {
 
     expect(fetch).toHaveBeenCalledTimes(1);
     const [url, init] = fetch.mock.calls[0];
-    expect(String(url)).toBe("https://api.minimax.chat/v1/coding_plan/vlm");
+    expect(String(url)).toBe("https://api.minimax.io/v1/coding_plan/vlm");
     expect(init?.method).toBe("POST");
     expect(String((init?.headers as Record<string, string>)?.Authorization)).toBe(
       "Bearer minimax-test",
@@ -346,6 +346,18 @@ describe("image tool MiniMax VLM routing", () => {
 });
 
 describe("image tool response validation", () => {
+  it("caps image-tool max tokens by model capability", () => {
+    expect(__testing.resolveImageToolMaxTokens(4000)).toBe(4000);
+  });
+
+  it("keeps requested image-tool max tokens when model capability is higher", () => {
+    expect(__testing.resolveImageToolMaxTokens(8192)).toBe(4096);
+  });
+
+  it("falls back to requested image-tool max tokens when model capability is missing", () => {
+    expect(__testing.resolveImageToolMaxTokens(undefined)).toBe(4096);
+  });
+
   it("rejects image-model responses with no final text", () => {
     expect(() =>
       __testing.coerceImageAssistantText({
