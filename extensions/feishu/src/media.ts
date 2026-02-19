@@ -8,6 +8,21 @@ import { createFeishuClient } from "./client.js";
 import { getFeishuRuntime } from "./runtime.js";
 import { resolveReceiveIdType, normalizeFeishuTarget } from "./targets.js";
 
+/** Get a logger for media operations, with fallback to console. */
+function getMediaLogger() {
+  try {
+    return getFeishuRuntime().logging.getChildLogger({ component: "feishu-media" });
+  } catch {
+    // Fallback to console if runtime not ready
+    return {
+      debug: (msg: string) => console.debug(`[feishu-media] ${msg}`),
+      info: (msg: string) => console.log(`[feishu-media] ${msg}`),
+      warn: (msg: string) => console.warn(`[feishu-media] ${msg}`),
+      error: (msg: string) => console.error(`[feishu-media] ${msg}`),
+    };
+  }
+}
+
 export type DownloadImageResult = {
   buffer: Buffer;
   contentType?: string;
@@ -265,15 +280,33 @@ export async function uploadFileFeishu(params: {
   // See: https://github.com/larksuite/node-sdk/issues/121
   const fileData = typeof file === "string" ? fs.createReadStream(file) : file;
 
-  const response = await client.im.file.create({
-    data: {
-      file_type: fileType,
-      file_name: fileName,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- SDK accepts Buffer or ReadStream
-      file: fileData as any,
-      ...(duration !== undefined && { duration }),
-    },
-  });
+  const logger = getMediaLogger();
+  logger.info(
+    `uploadFileFeishu: uploading fileName=${fileName} fileType=${fileType} duration=${duration} bufferSize=${typeof file === "string" ? "path" : file.length}`,
+  );
+
+  let response;
+  try {
+    response = await client.im.file.create({
+      data: {
+        file_type: fileType,
+        file_name: fileName,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- SDK accepts Buffer or ReadStream
+        file: fileData as any,
+        ...(duration !== undefined && { duration: String(duration) }),
+      },
+    });
+  } catch (uploadErr: unknown) {
+    // Capture Axios response body for debugging
+    const axiosErr = uploadErr as { response?: { status?: number; data?: unknown } };
+    const respData = axiosErr.response?.data;
+    logger.error(
+      `uploadFileFeishu: HTTP ${axiosErr.response?.status ?? "?"} — response: ${JSON.stringify(respData ?? "no body")}`,
+    );
+    throw uploadErr;
+  }
+
+  logger.info(`uploadFileFeishu: response received`);
 
   // SDK v1.30+ returns data directly without code wrapper on success
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- SDK response type
@@ -362,10 +395,12 @@ export async function sendFileFeishu(params: {
   fileKey: string;
   /** Use "media" for audio/video files, "file" for documents */
   msgType?: "file" | "media";
+  /** Cover image key for video messages (msg_type "media") */
+  imageKey?: string;
   replyToMessageId?: string;
   accountId?: string;
 }): Promise<SendMediaResult> {
-  const { cfg, to, fileKey, replyToMessageId, accountId } = params;
+  const { cfg, to, fileKey, imageKey, replyToMessageId, accountId } = params;
   const msgType = params.msgType ?? "file";
   const account = resolveFeishuAccount({ cfg, accountId });
   if (!account.configured) {
@@ -379,7 +414,12 @@ export async function sendFileFeishu(params: {
   }
 
   const receiveIdType = resolveReceiveIdType(receiveId);
-  const content = JSON.stringify({ file_key: fileKey });
+  // For media (video/audio), include image_key as cover if available
+  const contentObj: Record<string, string> = { file_key: fileKey };
+  if (imageKey && msgType === "media") {
+    contentObj.image_key = imageKey;
+  }
+  const content = JSON.stringify(contentObj);
 
   if (replyToMessageId) {
     const response = await client.im.message.reply({
@@ -469,19 +509,43 @@ export async function sendMediaFeishu(params: {
   }
   const mediaMaxBytes = (account.config?.mediaMaxMb ?? 30) * 1024 * 1024;
 
-  let buffer: Buffer;
+  let buffer: Buffer | undefined;
+  let localPath: string | undefined;
   let name: string;
 
   if (mediaBuffer) {
     buffer = mediaBuffer;
     name = fileName ?? "file";
   } else if (mediaUrl) {
-    const loaded = await getFeishuRuntime().media.loadWebMedia(mediaUrl, {
-      maxBytes: mediaMaxBytes,
-      optimizeImages: false,
-    });
-    buffer = loaded.buffer;
-    name = fileName ?? loaded.fileName ?? "file";
+    // Check if it's a local file path — use path directly for large files (avoids form-data issues)
+    const isLocal =
+      !mediaUrl.startsWith("http://") &&
+      !mediaUrl.startsWith("https://") &&
+      !mediaUrl.startsWith("data:");
+    if (isLocal) {
+      try {
+        await fs.promises.access(mediaUrl, fs.constants.R_OK);
+        const stat = await fs.promises.stat(mediaUrl);
+        if (stat.size > mediaMaxBytes) {
+          throw new Error(`File too large: ${stat.size} bytes (max ${mediaMaxBytes})`);
+        }
+        localPath = mediaUrl;
+        name = fileName ?? path.basename(mediaUrl);
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+          throw new Error(`Local file not found: ${mediaUrl}`);
+        }
+        throw e;
+      }
+    } else {
+      const loaded = await getFeishuRuntime().media.loadWebMedia(mediaUrl, {
+        maxBytes: mediaMaxBytes,
+        optimizeImages: false,
+        localRoots: "any",
+      });
+      buffer = loaded.buffer;
+      name = fileName ?? loaded.fileName ?? "file";
+    }
   } else {
     throw new Error("Either mediaUrl or mediaBuffer must be provided");
   }
@@ -491,23 +555,87 @@ export async function sendMediaFeishu(params: {
   const isImage = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".ico", ".tiff"].includes(ext);
 
   if (isImage) {
-    const { imageKey } = await uploadImageFeishu({ cfg, image: buffer, accountId });
+    // For images, we need a buffer
+    if (!buffer && localPath) {
+      buffer = await fs.promises.readFile(localPath);
+    }
+    const { imageKey } = await uploadImageFeishu({ cfg, image: buffer!, accountId });
     return sendImageFeishu({ cfg, to, imageKey, replyToMessageId, accountId });
   } else {
     const fileType = detectFileType(name);
+    const isMedia = fileType === "mp4" || fileType === "opus";
+
+    // Feishu API requires duration (ms) for audio/video uploads.
+    // Try to probe duration via ffprobe on the source file.
+    let duration: number | undefined;
+    const probePath = localPath ?? mediaUrl;
+    if (isMedia && probePath && !probePath.startsWith("http")) {
+      try {
+        const { execSync } = await import("child_process");
+        const probe = execSync(`ffprobe -v quiet -print_format json -show_format "${probePath}"`, {
+          timeout: 10_000,
+          encoding: "utf-8",
+        });
+        const parsed = JSON.parse(probe);
+        const secs = parseFloat(parsed?.format?.duration);
+        if (!isNaN(secs) && secs > 0) {
+          duration = Math.round(secs * 1000);
+        }
+      } catch {
+        // ffprobe unavailable or failed
+      }
+    }
+    // Fallback: rough estimate if probe failed
+    if (isMedia && !duration) {
+      const fileSize = localPath ? (await fs.promises.stat(localPath)).size : (buffer?.length ?? 0);
+      const bitsPerSec = fileType === "opus" ? 128_000 : 2_000_000;
+      duration = Math.max(1000, Math.round(((fileSize * 8) / bitsPerSec) * 1000));
+    }
+
+    // Prefer passing file path (ReadStream) over Buffer for large files
+    const fileArg: Buffer | string = localPath ?? buffer!;
+
     const { fileKey } = await uploadFileFeishu({
       cfg,
-      file: buffer,
+      file: fileArg,
       fileName: name,
       fileType,
+      duration,
       accountId,
     });
-    // Feishu requires msg_type "media" for audio/video, "file" for documents
-    const isMedia = fileType === "mp4" || fileType === "opus";
+
+    // For video files, extract a cover frame and upload as image_key
+    let coverImageKey: string | undefined;
+    const logger = getMediaLogger();
+    logger.info(
+      `sendMediaFeishu: fileType=${fileType} localPath=${localPath ?? "none"} mediaUrl=${mediaUrl ?? "none"}`,
+    );
+    if (fileType === "mp4" && (localPath || (mediaUrl && !mediaUrl.startsWith("http")))) {
+      const videoPath = localPath ?? mediaUrl!;
+      logger.info(`sendMediaFeishu: extracting cover from ${videoPath}`);
+      try {
+        const { execSync } = await import("child_process");
+        const tmpCover = path.join(os.tmpdir(), `feishu_cover_${Date.now()}.jpg`);
+        execSync(`ffmpeg -y -i "${videoPath}" -ss 00:00:01 -vframes 1 -q:v 5 "${tmpCover}"`, {
+          timeout: 15_000,
+          stdio: "pipe",
+        });
+        logger.info(`sendMediaFeishu: cover extracted, uploading image`);
+        const { imageKey } = await uploadImageFeishu({ cfg, image: tmpCover, accountId });
+        coverImageKey = imageKey;
+        logger.info(`sendMediaFeishu: cover uploaded imageKey=${imageKey}`);
+        await fs.promises.unlink(tmpCover).catch(() => {});
+      } catch (coverErr) {
+        const errMsg = coverErr instanceof Error ? coverErr.message : String(coverErr);
+        logger.error(`sendMediaFeishu: cover extraction failed: ${errMsg}`);
+      }
+    }
+
     return sendFileFeishu({
       cfg,
       to,
       fileKey,
+      imageKey: coverImageKey,
       msgType: isMedia ? "media" : "file",
       replyToMessageId,
       accountId,

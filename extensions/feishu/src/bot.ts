@@ -829,16 +829,29 @@ export async function handleFeishuMessage(params: {
     });
 
     // If this is an audio message, attempt ASR so agents that can't process audio can still respond.
-    if (event.message.message_type === "audio" && mediaList.length > 0) {
-      try {
-        const audioPath = mediaList[0]?.path;
-        if (audioPath) {
+    // Also try ASR for text messages that might have voice (飞书自动转文字后消息类型变成text)
+    if (
+      (event.message.message_type === "audio" || event.message.message_type === "text") &&
+      mediaList.length > 0
+    ) {
+      // Check if this is an audio file
+      const audioMedia = mediaList.find(
+        (m) =>
+          m.path &&
+          (m.path.endsWith(".ogg") ||
+            m.path.endsWith(".amr") ||
+            m.path.endsWith(".mp3") ||
+            m.path.endsWith(".wav")),
+      );
+      if (audioMedia?.path) {
+        try {
+          const audioPath = audioMedia.path;
           const { readFile } = await import("node:fs/promises");
-          const path = await import("node:path");
+          const pathModule = await import("node:path");
 
           const audioBuf = await readFile(audioPath);
           const form = new FormData();
-          form.append("file", new Blob([audioBuf]), path.basename(audioPath));
+          form.append("file", new Blob([audioBuf]), pathModule.basename(audioPath));
 
           const controller = new AbortController();
           const timeout = setTimeout(() => controller.abort(), 10_000);
@@ -862,12 +875,14 @@ export async function handleFeishuMessage(params: {
                 `feishu[${account.accountId}]: ASR failed (status=${resp.status}), keeping original audio. ${body}`,
               );
             }
+          } catch (err) {
+            log(`feishu[${account.accountId}]: ASR request failed: ${String(err)}`);
           } finally {
             clearTimeout(timeout);
           }
+        } catch (err) {
+          log(`feishu[${account.accountId}]: ASR failed, keeping original audio: ${String(err)}`);
         }
-      } catch (err) {
-        log(`feishu[${account.accountId}]: ASR failed, keeping original audio: ${String(err)}`);
       }
     }
 

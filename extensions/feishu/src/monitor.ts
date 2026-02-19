@@ -1,4 +1,5 @@
 import * as Lark from "@larksuiteoapi/node-sdk";
+import * as fs from "fs";
 import * as http from "http";
 import {
   type ClawdbotConfig,
@@ -6,6 +7,7 @@ import {
   type HistoryEntry,
   installRequestBodyLimitGuard,
 } from "openclaw/plugin-sdk";
+import * as path from "path";
 import type { ResolvedFeishuAccount } from "./types.js";
 import { resolveFeishuAccount, listEnabledFeishuAccounts } from "./accounts.js";
 import {
@@ -21,6 +23,16 @@ import {
   getRegisteredFeishuAccountIds,
 } from "./cross-bot-broadcast.js";
 import { probeFeishu } from "./probe.js";
+
+interface FeishuReactionEvent {
+  message_id: string;
+  reaction_type?: { emoji_type?: string };
+  operator_type?: string;
+  user_id?: { open_id?: string; user_id?: string; union_id?: string };
+  action_time?: string;
+}
+
+const REACTIONS_JSONL_PATH = "/Users/ly/.openclaw/workspace/x-feed/reactions_events.jsonl";
 
 export type MonitorFeishuOpts = {
   config?: ClawdbotConfig;
@@ -209,6 +221,64 @@ function registerEventHandlers(
         }
       } catch (err) {
         error(`feishu[${accountId}]: error handling user deleted event: ${String(err)}`);
+      }
+    },
+    "im.message.reaction.created_v1": async (data) => {
+      try {
+        const event = data as unknown as FeishuReactionEvent;
+        const emojiType = event.reaction_type?.emoji_type ?? "unknown";
+        const userOpenId = event.user_id?.open_id ?? "unknown";
+        log(
+          `feishu[${accountId}]: reaction created on message ${event.message_id}: ${emojiType} by ${userOpenId}`,
+        );
+        const record = JSON.stringify({
+          event: "created",
+          message_id: event.message_id,
+          emoji_type: emojiType,
+          user_open_id: userOpenId,
+          operator_type: event.operator_type,
+          action_time: event.action_time,
+          timestamp: new Date().toISOString(),
+        });
+        try {
+          const dir = path.dirname(REACTIONS_JSONL_PATH);
+          if (fs.existsSync(dir)) {
+            await fs.promises.appendFile(REACTIONS_JSONL_PATH, record + "\n");
+          }
+        } catch (fileErr) {
+          error(`feishu[${accountId}]: failed to write reaction event to file: ${String(fileErr)}`);
+        }
+      } catch (err) {
+        error(`feishu[${accountId}]: error handling reaction created event: ${String(err)}`);
+      }
+    },
+    "im.message.reaction.deleted_v1": async (data) => {
+      try {
+        const event = data as unknown as FeishuReactionEvent;
+        const emojiType = event.reaction_type?.emoji_type ?? "unknown";
+        const userOpenId = event.user_id?.open_id ?? "unknown";
+        log(
+          `feishu[${accountId}]: reaction deleted on message ${event.message_id}: ${emojiType} by ${userOpenId}`,
+        );
+        const record = JSON.stringify({
+          event: "deleted",
+          message_id: event.message_id,
+          emoji_type: emojiType,
+          user_open_id: userOpenId,
+          operator_type: event.operator_type,
+          action_time: event.action_time,
+          timestamp: new Date().toISOString(),
+        });
+        try {
+          const dir = path.dirname(REACTIONS_JSONL_PATH);
+          if (fs.existsSync(dir)) {
+            await fs.promises.appendFile(REACTIONS_JSONL_PATH, record + "\n");
+          }
+        } catch (fileErr) {
+          error(`feishu[${accountId}]: failed to write reaction event to file: ${String(fileErr)}`);
+        }
+      } catch (err) {
+        error(`feishu[${accountId}]: error handling reaction deleted event: ${String(err)}`);
       }
     },
   });
