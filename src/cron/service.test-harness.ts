@@ -2,13 +2,15 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, vi } from "vitest";
+import type { MockFn } from "../test-utils/vitest-mock-fn.js";
+import type { CronEvent } from "./service.js";
+import { CronService } from "./service.js";
 
-// Avoid exporting inferred vitest mock types (TS2742 under pnpm + d.ts emit).
 export type NoopLogger = {
-  debug: ReturnType<typeof vi.fn>;
-  info: ReturnType<typeof vi.fn>;
-  warn: ReturnType<typeof vi.fn>;
-  error: ReturnType<typeof vi.fn>;
+  debug: MockFn;
+  info: MockFn;
+  warn: MockFn;
+  error: MockFn;
 };
 
 export function createNoopLogger(): NoopLogger {
@@ -63,4 +65,49 @@ export function installCronTestHooks(options: {
   afterEach(() => {
     vi.useRealTimers();
   });
+}
+
+export function createFinishedBarrier() {
+  const resolvers = new Map<string, (evt: CronEvent) => void>();
+  return {
+    waitForOk: (jobId: string) =>
+      new Promise<CronEvent>((resolve) => {
+        resolvers.set(jobId, resolve);
+      }),
+    onEvent: (evt: CronEvent) => {
+      if (evt.action !== "finished" || evt.status !== "ok") {
+        return;
+      }
+      const resolve = resolvers.get(evt.jobId);
+      if (!resolve) {
+        return;
+      }
+      resolvers.delete(evt.jobId);
+      resolve(evt);
+    },
+  };
+}
+
+export function createStartedCronServiceWithFinishedBarrier(params: {
+  storePath: string;
+  logger: ReturnType<typeof createNoopLogger>;
+}): {
+  cron: CronService;
+  enqueueSystemEvent: MockFn;
+  requestHeartbeatNow: MockFn;
+  finished: ReturnType<typeof createFinishedBarrier>;
+} {
+  const enqueueSystemEvent = vi.fn();
+  const requestHeartbeatNow = vi.fn();
+  const finished = createFinishedBarrier();
+  const cron = new CronService({
+    storePath: params.storePath,
+    cronEnabled: true,
+    log: params.logger,
+    enqueueSystemEvent,
+    requestHeartbeatNow,
+    runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
+    onEvent: finished.onEvent,
+  });
+  return { cron, enqueueSystemEvent, requestHeartbeatNow, finished };
 }
