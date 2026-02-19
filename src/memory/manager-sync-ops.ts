@@ -112,6 +112,11 @@ export abstract class MemoryManagerSyncOps {
     available: boolean;
     loadError?: string;
   } = { enabled: false, available: false };
+  protected readonly trigramFts: {
+    enabled: boolean;
+    available: boolean;
+    loadError?: string;
+  } = { enabled: this.fts.enabled, available: false };
   protected vectorReady: Promise<boolean> | null = null;
   protected watcher: FSWatcher | null = null;
   protected watchTimer: NodeJS.Timeout | null = null;

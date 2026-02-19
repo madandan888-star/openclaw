@@ -9,10 +9,6 @@ import {
 import type { MentionTarget } from "./mention.js";
 import { resolveFeishuAccount } from "./accounts.js";
 import { createFeishuClient } from "./client.js";
-import {
-  broadcastFeishuBotMessageToOtherAccounts,
-  dispatchCrossBotMentions,
-} from "./cross-bot-broadcast.js";
 import { buildMentionedCardContent } from "./mention.js";
 import { getFeishuRuntime } from "./runtime.js";
 import { sendMarkdownCardFeishu, sendMessageFeishu } from "./send.js";
@@ -30,36 +26,14 @@ export type CreateFeishuReplyDispatcherParams = {
   agentId: string;
   runtime: RuntimeEnv;
   chatId: string;
-  chatType: "p2p" | "group";
   replyToMessageId?: string;
   mentionTargets?: MentionTarget[];
   accountId?: string;
-  /** Cross-bot dispatch depth (0 = not from cross-bot). Dispatch continues if depth < maxCrossBotDepth. */
-  crossBotDepth?: number;
 };
 
 export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherParams) {
   const core = getFeishuRuntime();
-
-  // Ensure runtime is always defined (cross-bot dispatch from outbound may pass undefined)
-  const noop = () => {};
-  if (!params.runtime) {
-    params = { ...params, runtime: { log: noop, error: noop } as RuntimeEnv };
-  }
-
-  const {
-    cfg,
-    agentId,
-    chatId,
-    chatType,
-    replyToMessageId,
-    mentionTargets,
-    accountId,
-    crossBotDepth = 0,
-  } = params;
-
-  const MAX_CROSS_BOT_DEPTH = 12;
-
+  const { cfg, agentId, chatId, replyToMessageId, mentionTargets, accountId } = params;
   const account = resolveFeishuAccount({ cfg, accountId });
   const prefixContext = createReplyPrefixContext({ cfg, agentId });
 
@@ -165,17 +139,10 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
       deliver: async (payload: ReplyPayload, info) => {
         const text = payload.text ?? "";
         if (!text.trim()) {
-          params.runtime.log?.(
-            `feishu[${account.accountId}] deliver: empty text, skipping (kind=${info?.kind})`,
-          );
           return;
         }
 
         const useCard = renderMode === "card" || (renderMode === "auto" && shouldUseCard(text));
-
-        params.runtime.log?.(
-          `feishu[${account.accountId}] deliver: kind=${info?.kind} len=${text.length} useCard=${useCard} streaming=${streamingEnabled} chatId=${chatId}`,
-        );
 
         if ((info?.kind === "block" || info?.kind === "final") && streamingEnabled && useCard) {
           startStreaming();
@@ -184,11 +151,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
           }
         }
 
-        // Streaming card path — update in-place, no chunk sending
         if (streaming?.isActive()) {
-          params.runtime.log?.(
-            `feishu[${account.accountId}] deliver: streaming active, kind=${info?.kind}`,
-          );
           if (info?.kind === "final") {
             streamText = text;
             await closeStreaming();
@@ -196,17 +159,14 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
           return;
         }
 
-        // Track the last sent messageId for cross-bot dispatch after all chunks
-        let lastSentMessageId: string | undefined;
         let first = true;
-
         if (useCard) {
           for (const chunk of core.channel.text.chunkTextWithMode(
             text,
             textChunkLimit,
             chunkMode,
           )) {
-            const sent = await sendMarkdownCardFeishu({
+            await sendMarkdownCardFeishu({
               cfg,
               to: chatId,
               text: chunk,
@@ -214,21 +174,6 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
               mentions: first ? mentionTargets : undefined,
               accountId,
             });
-
-            lastSentMessageId = sent.messageId;
-
-            if (chatType === "group") {
-              broadcastFeishuBotMessageToOtherAccounts({
-                cfg,
-                chatId,
-                senderAccountId: account.accountId,
-                senderBotName: account.name ?? account.accountId,
-                text: chunk,
-                messageId: sent.messageId,
-                log: (msg) => params.runtime.log?.(msg),
-              });
-            }
-
             first = false;
           }
         } else {
@@ -238,7 +183,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
             textChunkLimit,
             chunkMode,
           )) {
-            const sent = await sendMessageFeishu({
+            await sendMessageFeishu({
               cfg,
               to: chatId,
               text: chunk,
@@ -246,48 +191,8 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
               mentions: first ? mentionTargets : undefined,
               accountId,
             });
-
-            lastSentMessageId = sent.messageId;
-
-            if (chatType === "group") {
-              broadcastFeishuBotMessageToOtherAccounts({
-                cfg,
-                chatId,
-                senderAccountId: account.accountId,
-                senderBotName: account.name ?? account.accountId,
-                text: chunk,
-                messageId: sent.messageId,
-                log: (msg) => params.runtime.log?.(msg),
-              });
-            }
-
             first = false;
           }
-        }
-
-        params.runtime.log?.(
-          `feishu[${account.accountId}] deliver: sent ${first ? 0 : "chunks"} lastMsgId=${lastSentMessageId ?? "none"} to=${chatId}`,
-        );
-
-        // After all chunks are sent, dispatch to any @mentioned bots
-        if (chatType === "group" && lastSentMessageId && crossBotDepth < MAX_CROSS_BOT_DEPTH) {
-          const mentionTargetOpenIds = mentionTargets?.map((m) => m.openId);
-          dispatchCrossBotMentions({
-            cfg,
-            chatId,
-            senderAccountId: account.accountId,
-            senderBotName: account.name ?? account.accountId,
-            text,
-            messageId: lastSentMessageId,
-            mentionTargetOpenIds,
-            crossBotDepth: crossBotDepth + 1,
-            runtime: params.runtime,
-            log: (msg) => params.runtime.log?.(msg),
-          }).catch((err) => {
-            params.runtime.log?.(
-              `feishu[${account.accountId}] cross-bot dispatch error: ${String(err)}`,
-            );
-          });
         }
       },
       onError: async (error, info) => {
