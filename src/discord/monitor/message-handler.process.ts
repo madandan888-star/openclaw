@@ -1,6 +1,4 @@
 import { ChannelType } from "@buape/carbon";
-import type { ReplyPayload } from "../../auto-reply/types.js";
-import type { DiscordMessagePreflightContext } from "./message-handler.preflight.js";
 import { resolveAckReaction, resolveHumanDelayConfig } from "../../agents/identity.js";
 import { resolveChunkMode } from "../../auto-reply/chunk.js";
 import { dispatchInboundMessage } from "../../auto-reply/dispatch.js";
@@ -11,6 +9,7 @@ import {
 } from "../../auto-reply/reply/history.js";
 import { finalizeInboundContext } from "../../auto-reply/reply/inbound-context.js";
 import { createReplyDispatcherWithTyping } from "../../auto-reply/reply/reply-dispatcher.js";
+import type { ReplyPayload } from "../../auto-reply/types.js";
 import { shouldAckReaction as shouldAckReactionGate } from "../../channels/ack-reactions.js";
 import { logTypingFailure, logAckFailure } from "../../channels/logging.js";
 import { createReplyPrefixOptions } from "../../channels/reply-prefix.js";
@@ -26,6 +25,7 @@ import { truncateUtf16Safe } from "../../utils.js";
 import { reactMessageDiscord, removeReactionDiscord } from "../send.js";
 import { normalizeDiscordSlug, resolveDiscordOwnerAllowFrom } from "./allow-list.js";
 import { resolveTimestampMs } from "./format.js";
+import type { DiscordMessagePreflightContext } from "./message-handler.preflight.js";
 import {
   buildDiscordMediaPayload,
   resolveDiscordMessageText,
@@ -81,6 +81,62 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+async function transcribeDiscordAudioWithLocalAsr(params: {
+  mediaList: Array<{ path: string; contentType?: string }>;
+  timeoutMs?: number;
+}): Promise<string | undefined> {
+  const { mediaList, timeoutMs = 10_000 } = params;
+  const audioMedia = mediaList.find((m) => {
+    const p = m.path?.toLowerCase() ?? "";
+    const t = m.contentType?.toLowerCase() ?? "";
+    return (
+      t.startsWith("audio/") ||
+      p.endsWith(".ogg") ||
+      p.endsWith(".amr") ||
+      p.endsWith(".mp3") ||
+      p.endsWith(".wav") ||
+      p.endsWith(".m4a") ||
+      p.endsWith(".opus")
+    );
+  });
+  if (!audioMedia?.path) {
+    return undefined;
+  }
+
+  try {
+    const [{ readFile }, pathModule] = await Promise.all([
+      import("node:fs/promises"),
+      import("node:path"),
+    ]);
+    const audioBuf = await readFile(audioMedia.path);
+    const form = new FormData();
+    form.append("file", new Blob([audioBuf]), pathModule.basename(audioMedia.path));
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const resp = await fetch("http://localhost:9882/transcribe", {
+        method: "POST",
+        body: form,
+        signal: controller.signal,
+      });
+      if (!resp.ok) {
+        const body = await resp.text().catch(() => "");
+        logVerbose(`discord: local ASR failed status=${resp.status} body=${body.slice(0, 200)}`);
+        return undefined;
+      }
+      const data = (await resp.json()) as { text?: string } | undefined;
+      const text = typeof data?.text === "string" ? data.text.trim() : "";
+      return text || undefined;
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch (err) {
+    logVerbose(`discord: local ASR request failed: ${String(err)}`);
+    return undefined;
+  }
 }
 
 function createDiscordStatusReactionController(params: {
@@ -318,7 +374,16 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
   const mediaList = await resolveMediaList(message, mediaMaxBytes);
   const forwardedMediaList = await resolveForwardedMediaList(message, mediaMaxBytes);
   mediaList.push(...forwardedMediaList);
-  const text = messageText;
+  let text = messageText;
+
+  // Mirror Feishu's flow: attempt local ASR for inbound audio attachments.
+  // This gives the agent readable Chinese transcript instead of only <media:audio>.
+  const audioTranscript = await transcribeDiscordAudioWithLocalAsr({ mediaList });
+  if (audioTranscript) {
+    const marker = `[语音转文字] ${audioTranscript}`;
+    text = text ? `${text}\n${marker}` : marker;
+  }
+
   if (!text) {
     logVerbose(`discord: drop message ${message.id} (empty content)`);
     return;
@@ -517,7 +582,7 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
 
   const ctxPayload = finalizeInboundContext({
     Body: combinedBody,
-    BodyForAgent: baseText ?? text,
+    BodyForAgent: baseText && baseText.trim().length > 0 ? baseText : text,
     InboundHistory: inboundHistory,
     RawBody: baseText,
     CommandBody: baseText,
