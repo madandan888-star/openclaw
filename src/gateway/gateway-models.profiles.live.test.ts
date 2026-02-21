@@ -1,11 +1,10 @@
-import type { Api, Model } from "@mariozechner/pi-ai";
 import { randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
+import type { Api, Model } from "@mariozechner/pi-ai";
 import { describe, it } from "vitest";
-import type { ModelsConfig, OpenClawConfig, ModelProviderConfig } from "../config/types.js";
 import { resolveOpenClawAgentDir } from "../agents/agent-paths.js";
 import { resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
 import {
@@ -23,12 +22,14 @@ import { getApiKeyForModel } from "../agents/model-auth.js";
 import { ensureOpenClawModelsJson } from "../agents/models-config.js";
 import { discoverAuthStorage, discoverModels } from "../agents/pi-model-discovery.js";
 import { loadConfig } from "../config/config.js";
+import type { ModelsConfig, OpenClawConfig, ModelProviderConfig } from "../config/types.js";
 import { isTruthyEnvValue } from "../infra/env.js";
 import { DEFAULT_AGENT_ID } from "../routing/session-key.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
 import { GatewayClient } from "./client.js";
 import { renderCatNoncePngBase64 } from "./live-image-probe.js";
 import { startGatewayServer } from "./server.js";
+import { extractPayloadText } from "./test-helpers.agent-results.js";
 
 const LIVE = isTruthyEnvValue(process.env.LIVE) || isTruthyEnvValue(process.env.OPENCLAW_LIVE_TEST);
 const GATEWAY_LIVE = isTruthyEnvValue(process.env.OPENCLAW_LIVE_GATEWAY);
@@ -72,15 +73,6 @@ function assertNoReasoningTags(params: {
       `[${params.label}] reasoning tag leak (${params.model} / ${params.phase}): ${snippet}`,
     );
   }
-}
-
-function extractPayloadText(result: unknown): string {
-  const record = result as Record<string, unknown>;
-  const payloads = Array.isArray(record.payloads) ? record.payloads : [];
-  const texts = payloads
-    .map((p) => (p && typeof p === "object" ? (p as Record<string, unknown>).text : undefined))
-    .filter((t): t is string => typeof t === "string" && t.trim().length > 0);
-  return texts.join("\n").trim();
 }
 
 function isMeaningful(text: string): boolean {

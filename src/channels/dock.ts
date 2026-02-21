@@ -1,17 +1,4 @@
 import type { OpenClawConfig } from "../config/config.js";
-import type {
-  ChannelCapabilities,
-  ChannelCommandAdapter,
-  ChannelElevatedAdapter,
-  ChannelGroupAdapter,
-  ChannelId,
-  ChannelAgentPromptAdapter,
-  ChannelMentionAdapter,
-  ChannelPlugin,
-  ChannelThreadingContext,
-  ChannelThreadingAdapter,
-  ChannelThreadingToolContext,
-} from "./plugins/types.js";
 import {
   resolveChannelGroupRequireMention,
   resolveChannelGroupToolsPolicy,
@@ -42,6 +29,19 @@ import {
   resolveWhatsAppGroupToolPolicy,
 } from "./plugins/group-mentions.js";
 import { normalizeSignalMessagingTarget } from "./plugins/normalize/signal.js";
+import type {
+  ChannelCapabilities,
+  ChannelCommandAdapter,
+  ChannelElevatedAdapter,
+  ChannelGroupAdapter,
+  ChannelId,
+  ChannelAgentPromptAdapter,
+  ChannelMentionAdapter,
+  ChannelPlugin,
+  ChannelThreadingContext,
+  ChannelThreadingAdapter,
+  ChannelThreadingToolContext,
+} from "./plugins/types.js";
 import { CHAT_CHANNEL_ORDER, type ChatChannelId, getChatChannelMeta } from "./registry.js";
 
 export type ChannelDock = {
@@ -127,6 +127,22 @@ function buildIMessageThreadToolContext(params: {
     currentThreadTs: params.context.ReplyToId,
     hasRepliedRef: params.hasRepliedRef,
   };
+}
+
+function resolveCaseInsensitiveAccount<T>(
+  accounts: Record<string, T> | undefined,
+  accountId?: string | null,
+): T | undefined {
+  if (!accounts) {
+    return undefined;
+  }
+  const normalized = normalizeAccountId(accountId);
+  return (
+    accounts[normalized] ??
+    accounts[
+      Object.keys(accounts).find((key) => key.toLowerCase() === normalized.toLowerCase()) ?? ""
+    ]
+  );
 }
 // Channel docks: lightweight channel metadata/behavior for shared code paths.
 //
@@ -282,14 +298,7 @@ const DOCKS: Record<ChatChannelId, ChannelDock> = {
     config: {
       resolveAllowFrom: ({ cfg, accountId }) => {
         const channel = cfg.channels?.irc;
-        const normalized = normalizeAccountId(accountId);
-        const account =
-          channel?.accounts?.[normalized] ??
-          channel?.accounts?.[
-            Object.keys(channel?.accounts ?? {}).find(
-              (key) => key.toLowerCase() === normalized.toLowerCase(),
-            ) ?? ""
-          ];
+        const account = resolveCaseInsensitiveAccount(channel?.accounts, accountId);
         return (account?.allowFrom ?? channel?.allowFrom ?? []).map((entry) => String(entry));
       },
       formatAllowFrom: ({ allowFrom }) =>
@@ -353,14 +362,7 @@ const DOCKS: Record<ChatChannelId, ChannelDock> = {
               dm?: { allowFrom?: Array<string | number> };
             }
           | undefined;
-        const normalized = normalizeAccountId(accountId);
-        const account =
-          channel?.accounts?.[normalized] ??
-          channel?.accounts?.[
-            Object.keys(channel?.accounts ?? {}).find(
-              (key) => key.toLowerCase() === normalized.toLowerCase(),
-            ) ?? ""
-          ];
+        const account = resolveCaseInsensitiveAccount(channel?.accounts, accountId);
         return (account?.dm?.allowFrom ?? channel?.dm?.allowFrom ?? []).map((entry) =>
           String(entry),
         );

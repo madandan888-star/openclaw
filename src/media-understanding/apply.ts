@@ -1,13 +1,7 @@
 import path from "node:path";
+import { finalizeInboundContext } from "../auto-reply/reply/inbound-context.js";
 import type { MsgContext } from "../auto-reply/templating.js";
 import type { OpenClawConfig } from "../config/config.js";
-import type {
-  MediaUnderstandingCapability,
-  MediaUnderstandingDecision,
-  MediaUnderstandingOutput,
-  MediaUnderstandingProvider,
-} from "./types.js";
-import { finalizeInboundContext } from "../auto-reply/reply/inbound-context.js";
 import { logVerbose, shouldLogVerbose } from "../globals.js";
 import {
   extractFileContentFromSource,
@@ -27,8 +21,15 @@ import {
   buildProviderRegistry,
   createMediaAttachmentCache,
   normalizeMediaAttachments,
+  resolveMediaAttachmentLocalRoots,
   runCapability,
 } from "./runner.js";
+import type {
+  MediaUnderstandingCapability,
+  MediaUnderstandingDecision,
+  MediaUnderstandingOutput,
+  MediaUnderstandingProvider,
+} from "./types.js";
 
 export type ApplyMediaUnderstandingResult = {
   outputs: MediaUnderstandingOutput[];
@@ -473,7 +474,9 @@ export async function applyMediaUnderstanding(params: {
 
   const attachments = normalizeMediaAttachments(ctx);
   const providerRegistry = buildProviderRegistry(params.providers);
-  const cache = createMediaAttachmentCache(attachments);
+  const cache = createMediaAttachmentCache(attachments, {
+    localPathRoots: resolveMediaAttachmentLocalRoots({ cfg, ctx }),
+  });
 
   try {
     const tasks = CAPABILITY_ORDER.map((capability) => async () => {

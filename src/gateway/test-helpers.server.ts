@@ -4,7 +4,6 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, vi } from "vitest";
 import { WebSocket } from "ws";
-import type { GatewayServerOptions } from "./server.js";
 import { resolveMainSessionKeyFromConfig, type SessionEntry } from "../config/sessions.js";
 import { resetAgentRunContextForTest } from "../infra/agent-events.js";
 import {
@@ -21,6 +20,7 @@ import { getDeterministicFreePortBlock } from "../test-utils/ports.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
 import { buildDeviceAuthPayload } from "./device-auth.js";
 import { PROTOCOL_VERSION } from "./protocol/index.js";
+import type { GatewayServerOptions } from "./server.js";
 import {
   agentCommand,
   cronIsolatedRun,
@@ -571,6 +571,43 @@ export async function connectOk(ws: WebSocket, opts?: Parameters<typeof connectR
   expect(res.ok).toBe(true);
   expect((res.payload as { type?: unknown } | undefined)?.type).toBe("hello-ok");
   return res.payload as { type: "hello-ok" };
+}
+
+export async function connectWebchatClient(params: {
+  port: number;
+  origin?: string;
+  client?: NonNullable<Parameters<typeof connectReq>[1]>["client"];
+}): Promise<WebSocket> {
+  const origin = params.origin ?? `http://127.0.0.1:${params.port}`;
+  const ws = new WebSocket(`ws://127.0.0.1:${params.port}`, {
+    headers: { origin },
+  });
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("timeout waiting for ws open")), 10_000);
+    const onOpen = () => {
+      clearTimeout(timer);
+      ws.off("error", onError);
+      resolve();
+    };
+    const onError = (err: Error) => {
+      clearTimeout(timer);
+      ws.off("open", onOpen);
+      reject(err);
+    };
+    ws.once("open", onOpen);
+    ws.once("error", onError);
+  });
+  await connectOk(ws, {
+    client:
+      params.client ??
+      ({
+        id: GATEWAY_CLIENT_NAMES.WEBCHAT,
+        version: "1.0.0",
+        platform: "test",
+        mode: GATEWAY_CLIENT_MODES.WEBCHAT,
+      } as NonNullable<Parameters<typeof connectReq>[1]>["client"]),
+  });
+  return ws;
 }
 
 export async function rpcReq<T extends Record<string, unknown>>(

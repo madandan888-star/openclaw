@@ -1,6 +1,5 @@
-import type { Logger as TsLogger } from "tslog";
 import { Chalk } from "chalk";
-import { inspect } from "node:util";
+import type { Logger as TsLogger } from "tslog";
 import { CHAT_CHANNEL_ORDER } from "../channels/registry.js";
 import { isVerbose } from "../globals.js";
 import { defaultRuntime, type RuntimeEnv } from "../runtime.js";
@@ -36,6 +35,39 @@ function shouldLogToConsole(level: LogLevel, settings: { level: LogLevel }): boo
 
 type ChalkInstance = InstanceType<typeof Chalk>;
 
+const inspectValue: ((value: unknown) => string) | null = (() => {
+  const getBuiltinModule = (
+    process as NodeJS.Process & {
+      getBuiltinModule?: (id: string) => unknown;
+    }
+  ).getBuiltinModule;
+  if (typeof getBuiltinModule !== "function") {
+    return null;
+  }
+  try {
+    const utilNamespace = getBuiltinModule("util") as {
+      inspect?: (value: unknown) => string;
+    };
+    return typeof utilNamespace.inspect === "function" ? utilNamespace.inspect : null;
+  } catch {
+    return null;
+  }
+})();
+
+function formatRuntimeArg(arg: unknown): string {
+  if (typeof arg === "string") {
+    return arg;
+  }
+  if (inspectValue) {
+    return inspectValue(arg);
+  }
+  try {
+    return JSON.stringify(arg);
+  } catch {
+    return String(arg);
+  }
+}
+
 function isRichConsoleEnv(): boolean {
   const term = (process.env.TERM ?? "").toLowerCase();
   if (process.env.COLORTERM || process.env.TERM_PROGRAM) {
@@ -54,12 +86,6 @@ function getColorForConsole(): ChalkInstance {
   }
   const hasTty = Boolean(process.stdout.isTTY || process.stderr.isTTY);
   return hasTty || isRichConsoleEnv() ? new Chalk({ level: 1 }) : new Chalk({ level: 0 });
-}
-
-function formatLocalTimestamp(): string {
-  const d = new Date();
-  const pad = (n: number, len = 2) => String(n).padStart(len, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
 }
 
 const SUBSYSTEM_COLORS = ["cyan", "green", "yellow", "blue", "magenta", "red"] as const;
@@ -183,10 +209,10 @@ function formatConsoleLine(opts: {
   const displayMessage = stripRedundantSubsystemPrefixForConsole(opts.message, displaySubsystem);
   const time = (() => {
     if (opts.style === "pretty") {
-      return color.gray(formatLocalTimestamp().slice(11, 19));
+      return color.gray(new Date().toISOString().slice(11, 19));
     }
     if (loggingState.consoleTimestampPrefix) {
-      return color.gray(formatLocalTimestamp());
+      return color.gray(new Date().toISOString());
     }
     return "";
   })();
@@ -329,7 +355,7 @@ export function runtimeForLogger(
 ): RuntimeEnv {
   const formatArgs = (...args: unknown[]) =>
     args
-      .map((arg) => (typeof arg === "string" ? arg : inspect(arg)))
+      .map((arg) => formatRuntimeArg(arg))
       .join(" ")
       .trim();
   return {

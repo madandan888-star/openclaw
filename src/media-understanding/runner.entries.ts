@@ -1,25 +1,18 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { MsgContext } from "../auto-reply/templating.js";
-import type { OpenClawConfig } from "../config/config.js";
-import type {
-  MediaUnderstandingConfig,
-  MediaUnderstandingModelConfig,
-} from "../config/types.tools.js";
-import type {
-  MediaUnderstandingCapability,
-  MediaUnderstandingDecision,
-  MediaUnderstandingModelDecision,
-  MediaUnderstandingOutput,
-  MediaUnderstandingProvider,
-} from "./types.js";
 import {
   collectProviderApiKeysForExecution,
   executeWithApiKeyRotation,
 } from "../agents/api-key-rotation.js";
 import { requireApiKey, resolveApiKeyForProvider } from "../agents/model-auth.js";
+import type { MsgContext } from "../auto-reply/templating.js";
 import { applyTemplate } from "../auto-reply/templating.js";
+import type { OpenClawConfig } from "../config/config.js";
+import type {
+  MediaUnderstandingConfig,
+  MediaUnderstandingModelConfig,
+} from "../config/types.tools.js";
 import { logVerbose, shouldLogVerbose } from "../globals.js";
 import { runExec } from "../process/exec.js";
 import { MediaAttachmentCache } from "./attachments.js";
@@ -34,6 +27,13 @@ import { extractGeminiResponse } from "./output-extract.js";
 import { describeImageWithModel } from "./providers/image.js";
 import { getMediaUnderstandingProvider, normalizeMediaProviderId } from "./providers/index.js";
 import { resolveMaxBytes, resolveMaxChars, resolvePrompt, resolveTimeoutMs } from "./resolve.js";
+import type {
+  MediaUnderstandingCapability,
+  MediaUnderstandingDecision,
+  MediaUnderstandingModelDecision,
+  MediaUnderstandingOutput,
+  MediaUnderstandingProvider,
+} from "./types.js";
 import { estimateBase64Size, resolveVideoMaxBase64Bytes } from "./video.js";
 
 export type ProviderRegistry = Map<string, MediaUnderstandingProvider>;
@@ -298,6 +298,28 @@ function resolveEntryRunOptions(params: {
   return { maxBytes, maxChars, timeoutMs, prompt };
 }
 
+async function resolveProviderExecutionAuth(params: {
+  providerId: string;
+  cfg: OpenClawConfig;
+  entry: MediaUnderstandingModelConfig;
+  agentDir?: string;
+}) {
+  const auth = await resolveApiKeyForProvider({
+    provider: params.providerId,
+    cfg: params.cfg,
+    profileId: params.entry.profile,
+    preferredProfile: params.entry.preferredProfile,
+    agentDir: params.agentDir,
+  });
+  return {
+    apiKeys: collectProviderApiKeysForExecution({
+      provider: params.providerId,
+      primaryApiKey: requireApiKey(auth, params.providerId),
+    }),
+    providerConfig: params.cfg.models?.providers?.[params.providerId],
+  };
+}
+
 export function formatDecisionSummary(decision: MediaUnderstandingDecision): string {
   const total = decision.attachments.length;
   const success = decision.attachments.filter(
@@ -406,18 +428,12 @@ export async function runProviderEntry(params: {
       maxBytes,
       timeoutMs,
     });
-    const auth = await resolveApiKeyForProvider({
-      provider: providerId,
+    const { apiKeys, providerConfig } = await resolveProviderExecutionAuth({
+      providerId,
       cfg,
-      profileId: entry.profile,
-      preferredProfile: entry.preferredProfile,
+      entry,
       agentDir: params.agentDir,
     });
-    const apiKeys = collectProviderApiKeysForExecution({
-      provider: providerId,
-      primaryApiKey: requireApiKey(auth, providerId),
-    });
-    const providerConfig = cfg.models?.providers?.[providerId];
     const baseUrl = entry.baseUrl ?? params.config?.baseUrl ?? providerConfig?.baseUrl;
     const mergedHeaders = {
       ...providerConfig?.headers,
@@ -475,18 +491,12 @@ export async function runProviderEntry(params: {
       `Video attachment ${params.attachmentIndex + 1} base64 payload ${estimatedBase64Bytes} exceeds ${maxBase64Bytes}`,
     );
   }
-  const auth = await resolveApiKeyForProvider({
-    provider: providerId,
+  const { apiKeys, providerConfig } = await resolveProviderExecutionAuth({
+    providerId,
     cfg,
-    profileId: entry.profile,
-    preferredProfile: entry.preferredProfile,
+    entry,
     agentDir: params.agentDir,
   });
-  const apiKeys = collectProviderApiKeysForExecution({
-    provider: providerId,
-    primaryApiKey: requireApiKey(auth, providerId),
-  });
-  const providerConfig = cfg.models?.providers?.[providerId];
   const result = await executeWithApiKeyRotation({
     provider: providerId,
     apiKeys,

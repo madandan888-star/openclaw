@@ -1,15 +1,10 @@
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import type { InlineCodeState } from "../markdown/code-spans.js";
-import type {
-  EmbeddedPiSubscribeContext,
-  EmbeddedPiSubscribeState,
-} from "./pi-embedded-subscribe.handlers.types.js";
-import type { SubscribeEmbeddedPiSessionParams } from "./pi-embedded-subscribe.types.js";
 import { parseReplyDirectives } from "../auto-reply/reply/reply-directives.js";
 import { createStreamingDirectiveAccumulator } from "../auto-reply/reply/streaming-directives.js";
 import { formatToolAggregate } from "../auto-reply/tool-meta.js";
 import { emitAgentEvent } from "../infra/agent-events.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import type { InlineCodeState } from "../markdown/code-spans.js";
 import { buildCodeSpanIndex, createInlineCodeState } from "../markdown/code-spans.js";
 import { EmbeddedBlockChunker } from "./pi-embedded-block-chunker.js";
 import {
@@ -17,6 +12,11 @@ import {
   normalizeTextForComparison,
 } from "./pi-embedded-helpers.js";
 import { createEmbeddedPiSessionEventHandler } from "./pi-embedded-subscribe.handlers.js";
+import type {
+  EmbeddedPiSubscribeContext,
+  EmbeddedPiSubscribeState,
+} from "./pi-embedded-subscribe.handlers.types.js";
+import type { SubscribeEmbeddedPiSessionParams } from "./pi-embedded-subscribe.types.js";
 import { formatReasoningMessage, stripDowngradedToolCallText } from "./pi-embedded-utils.js";
 import { hasNonzeroUsage, normalizeUsage, type UsageLike } from "./usage.js";
 
@@ -55,6 +55,7 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
     emittedAssistantUpdate: false,
     lastStreamedReasoning: undefined,
     lastBlockReplyText: undefined,
+    reasoningStreamOpen: false,
     assistantMessageIndex: 0,
     lastAssistantTextMessageIndex: -1,
     lastAssistantTextNormalized: undefined,
@@ -117,7 +118,7 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
     state.lastBlockReplyText = undefined;
     state.lastStreamedReasoning = undefined;
     state.lastReasoningSent = undefined;
-    state.nativeThinkingBuffer = undefined;
+    state.reasoningStreamOpen = false;
     state.suppressBlockChunks = false;
     state.assistantMessageIndex += 1;
     state.lastAssistantTextMessageIndex = -1;
@@ -213,9 +214,6 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
     }
   };
 
-  const COMPACTION_SAFETY_TIMEOUT_MS = 90_000; // 90s safety net
-  let compactionSafetyTimer: ReturnType<typeof setTimeout> | undefined;
-
   const ensureCompactionPromise = () => {
     if (!state.compactionRetryPromise) {
       // Create a single promise that resolves when ALL pending compactions complete
@@ -228,21 +226,6 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
       state.compactionRetryPromise.catch((err) => {
         log.debug(`compaction promise rejected (no waiter): ${String(err)}`);
       });
-      // Safety timeout: if compaction events are lost (e.g., gateway restart
-      // severs the event stream), auto-resolve so the session doesn't hang forever.
-      clearTimeout(compactionSafetyTimer);
-      compactionSafetyTimer = setTimeout(() => {
-        if (state.compactionInFlight || state.pendingCompactionRetry > 0) {
-          log.warn(
-            `compaction safety timeout (${COMPACTION_SAFETY_TIMEOUT_MS}ms): force-resolving compaction wait`,
-          );
-          state.compactionInFlight = false;
-          state.pendingCompactionRetry = 0;
-          state.compactionRetryResolve?.();
-          state.compactionRetryResolve = undefined;
-          state.compactionRetryPromise = null;
-        }
-      }, COMPACTION_SAFETY_TIMEOUT_MS);
     }
   };
 
@@ -257,7 +240,6 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
     }
     state.pendingCompactionRetry -= 1;
     if (state.pendingCompactionRetry === 0 && !state.compactionInFlight) {
-      clearTimeout(compactionSafetyTimer);
       state.compactionRetryResolve?.();
       state.compactionRetryResolve = undefined;
       state.compactionRetryReject = undefined;
@@ -267,7 +249,6 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
 
   const maybeResolveCompactionWait = () => {
     if (state.pendingCompactionRetry === 0 && !state.compactionInFlight) {
-      clearTimeout(compactionSafetyTimer);
       state.compactionRetryResolve?.();
       state.compactionRetryResolve = undefined;
       state.compactionRetryReject = undefined;
