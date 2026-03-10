@@ -1,9 +1,9 @@
-import type { OpenClawConfig } from "./types.js";
-import type { ModelDefinitionConfig } from "./types.models.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../agents/defaults.js";
 import { parseModelRef } from "../agents/model-selection.js";
 import { DEFAULT_AGENT_MAX_CONCURRENT, DEFAULT_SUBAGENT_MAX_CONCURRENT } from "./agent-limits.js";
 import { resolveTalkApiKey } from "./talk.js";
+import type { OpenClawConfig } from "./types.js";
+import type { ModelDefinitionConfig } from "./types.models.js";
 
 type WarnState = { warned: boolean };
 
@@ -21,7 +21,7 @@ const DEFAULT_MODEL_ALIASES: Readonly<Record<string, string>> = {
   "gpt-mini": "openai/gpt-5-mini",
 
   // Google Gemini (3.x are preview ids in the catalog)
-  gemini: "google/gemini-3-pro-preview",
+  gemini: "google/gemini-3.1-pro-preview",
   "gemini-flash": "google/gemini-3-flash-preview",
 };
 

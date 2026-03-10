@@ -186,7 +186,7 @@ If you omit `capabilities`, the entry is eligible for the list it appears in.
 **Image**
 
 - Prefer your active model if it supports images.
-- Good defaults: `openai/gpt-5.2`, `anthropic/claude-opus-4-6`, `google/gemini-3-pro-preview`.
+- Good defaults: `openai/gpt-5.2`, `anthropic/claude-opus-4-6`, `google/gemini-3.1-pro-preview`.
 
 **Audio**
 
@@ -196,7 +196,7 @@ If you omit `capabilities`, the entry is eligible for the list it appears in.
 
 **Video**
 
-- `google/gemini-3-flash-preview` (fast), `google/gemini-3-pro-preview` (richer).
+- `google/gemini-3-flash-preview` (fast), `google/gemini-3.1-pro-preview` (richer).
 - CLI fallback: `gemini` CLI (supports `read_file` on video/audio).
 
 ## Attachment policy
@@ -329,7 +329,7 @@ When `mode: "all"`, outputs are labeled `[Image 1/2]`, `[Audio 2/2]`, etc.
         models: [
           {
             provider: "google",
-            model: "gemini-3-pro-preview",
+            model: "gemini-3.1-pro-preview",
             capabilities: ["image", "video", "audio"],
           },
         ],
@@ -338,7 +338,7 @@ When `mode: "all"`, outputs are labeled `[Image 1/2]`, `[Audio 2/2]`, etc.
         models: [
           {
             provider: "google",
-            model: "gemini-3-pro-preview",
+            model: "gemini-3.1-pro-preview",
             capabilities: ["image", "video", "audio"],
           },
         ],
@@ -347,7 +347,7 @@ When `mode: "all"`, outputs are labeled `[Image 1/2]`, `[Audio 2/2]`, etc.
         models: [
           {
             provider: "google",
-            model: "gemini-3-pro-preview",
+            model: "gemini-3.1-pro-preview",
             capabilities: ["image", "video", "audio"],
           },
         ],

@@ -223,7 +223,7 @@ export const VENICE_MODEL_CATALOG = [
 
   // Google (via Venice)
   {
-    id: "gemini-3-pro-preview",
+    id: "gemini-3.1-pro-preview",
     name: "Gemini 3 Pro (via Venice)",
     reasoning: true,
     input: ["text", "image"],
